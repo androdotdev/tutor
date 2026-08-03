@@ -7,7 +7,10 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "@tutor/*": ["./packages/*/src/index.ts"]
+    }
   },
   "include": ["packages/*/src/**/*.ts", "packages/*/src/**/*.tsx"]
 }

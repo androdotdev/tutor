@@ -20,6 +20,7 @@
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
+    "@cline/shared": "0.0.69",
     "@oh-my-pi/pi-tui": "17.2.5",
     "@oh-my-pi/pi-natives": "17.2.5",
     "commander": "15.0.0"

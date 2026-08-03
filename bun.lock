@@ -9,6 +9,7 @@
         "@types/node": "^22.0.0",
         "eslint": "10.8.0",
         "globals": "17.9.0",
+        "typescript": "6.0.3",
         "typescript-eslint": "8.65.0",
       },
     },
@@ -25,11 +26,12 @@
     },
     "packages/cli": {
       "name": "@tutor/cli",
-      "version": "0.0.0",
+      "version": "0.0.2",
       "bin": {
         "lyceum": "./dist/bin.js",
       },
       "dependencies": {
+        "@cline/shared": "0.0.69",
         "@oh-my-pi/pi-natives": "17.2.5",
         "@oh-my-pi/pi-tui": "17.2.5",
         "commander": "15.0.0",
