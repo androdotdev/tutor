@@ -1,4 +1,5 @@
 import { Key, matchesKey, ProcessTerminal, Text, TUI } from "@oh-my-pi/pi-tui";
+import { join } from "node:path";
 import type { ModuleDesc } from "@tutor/shared";
 import { resolveCourse } from "@tutor/shared";
 import { resolveProvider } from "@tutor/llms";
@@ -39,6 +40,7 @@ export async function runTui(
         provider,
         userPrompt: userConfig.systemPrompt,
         skillsDir: userConfig.skillsDir,
+        historyFile: join(courseRoot, "session", `${module.id}.json`),
       }),
     onQuit: quit,
   });

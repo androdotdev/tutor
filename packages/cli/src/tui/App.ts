@@ -190,6 +190,11 @@ export class SessionView extends Container {
       who: "note",
       text: `Module ${this.module.id} — ${this.module.title}. Describe what you're stuck on, or ask the coach to read the exercise or run the tests.`,
     });
+    // Resumed session: replay the stored conversation so the transcript (and
+    // the learner) pick up where they left off.
+    for (const turn of this.session.historyTurns) {
+      this.transcript.add({ who: turn.who, text: turn.text });
+    }
     this.session.subscribe((event) => this.onEvent(event));
   }
 
