@@ -1,7 +1,7 @@
 name: Publish CLI
 
 # Tag with cli-v<semver> (e.g. cli-v0.0.2) to build and publish that version
-# of @tutor/cli to npm. Requires the NPM_TOKEN secret.
+# of @androff/tutor-ai to npm. Requires the NPM_TOKEN secret.
 on:
   push:
     tags:
@@ -21,7 +21,7 @@ jobs:
       - name: Set version from tag
         run: |
           VERSION="${GITHUB_REF_NAME#cli-v}"
-          echo "Publishing @tutor/cli@${VERSION}"
+          echo "Publishing @androff/tutor-ai@${VERSION}"
           jq --arg v "$VERSION" '.version = $v' packages/cli/package.json > tmp.json && mv tmp.json packages/cli/package.json
       - name: Build bundle
         run: bun run --cwd packages/cli build

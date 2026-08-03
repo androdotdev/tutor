@@ -1,5 +1,5 @@
 {
-  "name": "@tutor/cli",
+  "name": "@androff/tutor-ai",
   "version": "0.0.2",
   "type": "module",
   "bin": {
