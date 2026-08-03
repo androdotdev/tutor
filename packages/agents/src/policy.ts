@@ -1,8 +1,16 @@
 import type { ModuleDesc } from "@tutor/shared";
 
+/** Module files loaded into the prompt at session start (never solutions). */
+export interface ModuleContext {
+  /** module README text */
+  readme?: string;
+  /** the student's exercise stub text */
+  exercise?: string;
+}
+
 /** Socratic teaching policy, injected as the system prompt. Enforces AGENTS.md. */
-export function buildSystemPrompt(module: ModuleDesc): string {
-  return [
+export function buildSystemPrompt(module: ModuleDesc, context?: ModuleContext): string {
+  const base = [
     `You are Lyceum, a Socratic self-learning coach for the module "${module.title}" (${module.dir}).`,
     `Your job is to TEACH, never to give answers.`,
     ``,
@@ -29,4 +37,20 @@ export function buildSystemPrompt(module: ModuleDesc): string {
     ``,
     `Be warm, concrete, and concise. Prefer questions over statements.`,
   ].join("\n");
+
+  if (!context || (!context.readme && !context.exercise)) return base;
+
+  const sections: string[] = [base, "", "# Module context (loaded at session start)"];
+  if (context.readme && module.readme) {
+    sections.push(`--- README (${module.readme}) ---\n${context.readme}`);
+  }
+  if (context.exercise && module.student) {
+    sections.push(`--- Exercise stub (${module.student}) ---\n${context.exercise}`);
+  }
+  sections.push(
+    "",
+    "Ground every hint in this context. If the student's question refers to code not shown here,",
+    "use read_file or ask them to paste it — never guess what the code does.",
+  );
+  return sections.join("\n");
 }

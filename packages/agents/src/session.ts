@@ -1,9 +1,37 @@
 import { createAgentRuntime, type AgentRuntimeConfig } from "@cline/agents";
 import type { AgentRuntimeEvent } from "@cline/shared";
-import type { ModuleDesc } from "@tutor/shared";
+import { readFileSync } from "node:fs";
+import { isSpoiler, type ModuleDesc } from "@tutor/shared";
 import { buildModel, type ProviderSelection } from "@tutor/llms";
 import { buildTools } from "@tutor/core";
-import { buildSystemPrompt } from "./policy";
+import { buildSystemPrompt, type ModuleContext } from "./policy";
+
+/** Per-file cap for context injected into the prompt. */
+const CONTEXT_FILE_LIMIT = 8_000;
+
+function readContextFile(courseRoot: string, file: string | null): string | undefined {
+  if (!file) return undefined;
+  // Defense in depth: never load anything the resolver would classify as a
+  // spoiler (solutions/ or project solution stubs), even though ModuleDesc
+  // paths are resolver-derived and should already be safe.
+  if (isSpoiler(courseRoot, file)) return undefined;
+  try {
+    const text = readFileSync(file, "utf8");
+    return text.length > CONTEXT_FILE_LIMIT
+      ? `${text.slice(0, CONTEXT_FILE_LIMIT)}\n…(truncated)`
+      : text;
+  } catch {
+    // Missing or unreadable file: contribute nothing rather than crash the session.
+    return undefined;
+  }
+}
+
+function buildModuleContext(courseRoot: string, module: ModuleDesc): ModuleContext {
+  return {
+    readme: readContextFile(courseRoot, module.readme),
+    exercise: readContextFile(courseRoot, module.student),
+  };
+}
 
 export interface TutorSessionOptions {
   courseRoot: string;
@@ -27,7 +55,7 @@ export function createTutorSession(opts: TutorSessionOptions): TutorSession {
   const baseTools = buildTools({ courseRoot: opts.courseRoot, modules: opts.modules });
   const runtime = createAgentRuntime({
     model: buildModel(opts.provider),
-    systemPrompt: buildSystemPrompt(opts.module),
+    systemPrompt: buildSystemPrompt(opts.module, buildModuleContext(opts.courseRoot, opts.module)),
     tools: [baseTools.run_tests, baseTools.read_file],
     maxIterations: opts.maxIterations ?? 8,
   } satisfies AgentRuntimeConfig);
