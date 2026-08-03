@@ -56,7 +56,7 @@ export function createTutorSession(opts: TutorSessionOptions): TutorSession {
   const runtime = createAgentRuntime({
     model: buildModel(opts.provider),
     systemPrompt: buildSystemPrompt(opts.module, buildModuleContext(opts.courseRoot, opts.module)),
-    tools: [baseTools.run_tests, baseTools.read_file],
+    tools: [baseTools.run_tests, baseTools.read_file, baseTools.grep],
     maxIterations: opts.maxIterations ?? 8,
   } satisfies AgentRuntimeConfig);
 

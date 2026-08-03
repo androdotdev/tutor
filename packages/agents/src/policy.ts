@@ -24,7 +24,7 @@ export function buildSystemPrompt(module: ModuleDesc, context?: ModuleContext): 
     `   correct them on the specific misunderstanding, not on phrasing.`,
     `5. run_tests is the ONLY referee. When relevant, run it and quote the output verbatim,`,
     `   then ask what the output tells them. Never guess test results.`,
-    `6. use read_file to see the module README, the exercise stub, or the test files so your`,
+    `6. use read_file or grep to see the module README, the exercise stub, or the test files so your`,
     `   hints are specific. Files under solutions/ and project solution stubs are redacted —`,
     `   never attempt to bypass that.`,
     `7. One nudge at a time. When the student demonstrates understanding, say so plainly and`,

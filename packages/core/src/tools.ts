@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { createTool } from "@cline/shared";
 import { isSpoiler, REDACTED_MESSAGE, type ModuleDesc } from "@tutor/shared";
-import { join, dirname, basename, sep } from "node:path";
-import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { join, dirname, basename, relative, sep } from "node:path";
+import { mkdir, readFile, realpath, readdir, writeFile } from "node:fs/promises";
 import { existsSync, lstatSync, statSync } from "node:fs";
 import type { TutorContext } from "./types";
 
@@ -106,7 +106,81 @@ export function buildTools(ctx: TutorContext) {
     },
   });
 
-  return { run_tests, read_file };
+  /** Max grep hits relayed to the model. */
+  const MAX_GREP_MATCHES = 30;
+  /** Max chars of a matched line relayed to the model. */
+  const MAX_GREP_LINE = 200;
+
+  const grep = createTool({
+    name: "grep",
+    description:
+      "Search the course (modules + root files) for a regex pattern; returns up to 30 matches as `file:line: text`. Solutions/ and project solution stubs are never searched. Use it to find where something is defined or mentioned without reading whole files.",
+    inputSchema: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] },
+    execute: async (input: { pattern: string }) => {
+      let re: RegExp;
+      try {
+        re = new RegExp(input.pattern, "i");
+      } catch (err) {
+        return { ok: false, message: `invalid regex: ${(err as Error).message}` };
+      }
+      const courseRoot = rootOf(ctx.courseRoot);
+      const matches: string[] = [];
+      // Helper pins the string-path overload of readdir (Dirent<string>[]).
+      const listEntries = (dir: string) => readdir(dir, { withFileTypes: true });
+      const walk = async (dir: string): Promise<void> => {
+        if (matches.length >= MAX_GREP_MATCHES) return;
+        let entries: Awaited<ReturnType<typeof listEntries>>;
+        try {
+          entries = await listEntries(dir);
+        } catch {
+          return; // unreadable dir: skip, never fail the whole search
+        }
+        for (const ent of entries) {
+          if (matches.length >= MAX_GREP_MATCHES) return;
+          const abs = join(dir, ent.name);
+          if (ent.isDirectory()) {
+            if (ent.name === "node_modules" || ent.name === ".git" || ent.name === "dist") continue;
+            if (isSpoiler(courseRoot, abs)) continue; // solutions/ dirs
+            await walk(abs);
+          } else if (ent.isFile() || ent.isSymbolicLink()) {
+            // Same lexical + realpath gates as read_file: a symlinked file may
+            // point at a spoiler or outside the course — resolve and re-check.
+            if (isSpoiler(courseRoot, abs) || underSolutionPath(ctx.modules, abs)) continue;
+            let real: string;
+            try {
+              real = await realpath(abs);
+            } catch {
+              continue;
+            }
+            if (!withinRoot(courseRoot, real)) continue;
+            if (isSpoiler(courseRoot, real) || underSolutionPath(ctx.modules, real)) continue;
+            let text: string;
+            try {
+              text = await readFile(real, "utf8");
+            } catch {
+              continue; // binary or unreadable
+            }
+            const rel = relative(courseRoot, real).split(sep).join("/");
+            for (const [lineNo, line] of text.split("\n").entries()) {
+              if (re.test(line)) {
+                const shown = line.length > MAX_GREP_LINE ? `${line.slice(0, MAX_GREP_LINE)}…` : line;
+                matches.push(`${rel}:${lineNo + 1}: ${shown}`);
+                if (matches.length >= MAX_GREP_MATCHES) return;
+              }
+            }
+          }
+        }
+      };
+      await walk(courseRoot);
+      return {
+        ok: true,
+        pattern: input.pattern,
+        matches: matches.length ? matches : ["no matches (solutions/ is never searched)"],
+      };
+    },
+  });
+
+  return { run_tests, read_file, grep };
 }
 
 /**
@@ -115,7 +189,7 @@ export function buildTools(ctx: TutorContext) {
  * for both read and write, so the learner can't peek or pollute the teacher's copy.
  */
 export function buildAuthorTools(ctx: TutorContext) {
-  const { run_tests, read_file } = buildTools(ctx);
+  const { run_tests, read_file, grep } = buildTools(ctx);
 
   const write_file = createTool({
     name: "write_file",
@@ -168,5 +242,5 @@ export function buildAuthorTools(ctx: TutorContext) {
     },
   });
 
-  return { run_tests, read_file, write_file };
+  return { run_tests, read_file, write_file, grep };
 }

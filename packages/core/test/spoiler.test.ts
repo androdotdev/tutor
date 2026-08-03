@@ -18,6 +18,7 @@ type TutorTools = ReturnType<typeof buildTools>;
 type AuthorTools = ReturnType<typeof buildAuthorTools>;
 let read_file: TutorTools["read_file"];
 let write_file: AuthorTools["write_file"];
+let grep: TutorTools["grep"];
 
 beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), "lyceum-gate-"));
@@ -51,7 +52,9 @@ beforeAll(async () => {
   writeFileSync(join(sibling, "modules", "01-x", "exercises", "student.js"), "SIBLING_STUDENT");
 
   ctx = { courseRoot: root, modules: await resolveCourse(root) };
-  read_file = buildTools(ctx).read_file;
+  const tools = buildTools(ctx);
+  read_file = tools.read_file;
+  grep = tools.grep;
   write_file = buildAuthorTools(ctx).write_file;
 });
 
@@ -161,5 +164,34 @@ describe("write_file spoiler gate (author mode)", () => {
     });
     expect(r.ok).toBe(true);
     expect(readFileSync(join(root, "modules", "01-legacy", "exercises", "new", "deep", "student2.js"), "utf8")).toBe("fresh");
+  });
+});
+
+describe("grep spoiler gate", () => {
+  test("finds matches in normal course files", async () => {
+    const r = await grep.execute({ pattern: "student code" });
+    expect(r.ok).toBe(true);
+    expect(r.matches.some((m) => m.includes("modules/01-legacy/exercises/student.js:1"))).toBe(true);
+    expect(r.matches.some((m) => m.includes("modules/02-modern/exercise/index.js:1"))).toBe(true);
+  });
+
+  test("never searches solutions/ or project solution stubs", async () => {
+    // SECRET lives ONLY in solutions/ and project/solution.js files — including
+    // through the innocent-looking symlink exercises/peek.js.
+    const r = await grep.execute({ pattern: SECRET });
+    expect(r.ok).toBe(true);
+    expect(r.matches[0]).toBe("no matches (solutions/ is never searched)");
+  });
+
+  test("never reports matches outside the course root", async () => {
+    const r = await grep.execute({ pattern: "SIBLING_STUDENT" });
+    expect(r.ok).toBe(true);
+    expect(r.matches[0]).toBe("no matches (solutions/ is never searched)");
+  });
+
+  test("reports invalid regex instead of crashing", async () => {
+    const r = await grep.execute({ pattern: "(" });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("invalid regex");
   });
 });
