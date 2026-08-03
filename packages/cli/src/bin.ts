@@ -7,11 +7,18 @@ import { resolveProvider } from "@tutor/llms";
 import { createAuthorSession } from "@tutor/agents";
 import { scaffoldCourse, addModule } from "@tutor/core";
 import { findCourseRoot } from "./root";
+import { loadUserConfig } from "./config";
+
+const userConfig = loadUserConfig();
 
 const ENV_HELP = `env:
   OPENAI_API_KEY / OPENAI_BASE_URL   (or OLLAMA_HOST)  — the coach's brain
   TUTOR_MODEL                       — model override
-  LYCEUM_COURSE                     — course root override`;
+  LYCEUM_COURSE                     — course root override
+config (~/.config/lyceum/, env vars win):
+  config.json                       — provider {apiKey,baseUrl,model} + defaultCourse
+  system-prompt.md                  — coaching instructions appended to the policy
+  skills/*.md                       — skills loaded on demand (list_skills/get_skill)`;
 
 /** A command failure with a specific process exit code. */
 class CliError extends Error {
@@ -21,7 +28,8 @@ class CliError extends Error {
 }
 
 async function loadCourse(): Promise<{ courseRoot: string; modules: ModuleDesc[] }> {
-  const courseRoot = process.env.LYCEUM_COURSE ?? findCourseRoot(process.cwd());
+  // Precedence: LYCEUM_COURSE env > cwd discovery > XDG config defaultCourse.
+  const courseRoot = process.env.LYCEUM_COURSE ?? findCourseRoot(process.cwd()) ?? userConfig.defaultCourse;
   if (!courseRoot) {
     throw new CliError("no course root found (no ./modules directory). Set LYCEUM_COURSE.");
   }
@@ -43,7 +51,7 @@ async function launchTui(moduleArg?: string): Promise<void> {
   // headless commands (list/test/new/add/provider) and out of the tsup entry
   // graph; static import would pull the terminal stack into every invocation.
   const { runTui } = await import("./tui/main");
-  await runTui(courseRoot, initial);
+  await runTui(courseRoot, initial, userConfig);
 }
 
 const program = new Command("lyceum")
@@ -110,7 +118,7 @@ program
       module = (await findModule(modules, mod.dir)) ?? null;
     }
     if (!module) throw new CliError(`could not resolve module "${title}"`);
-    const provider = resolveProvider();
+    const provider = resolveProvider(userConfig.provider);
     if (!provider) throw new CliError("draft needs an LLM — set OPENAI_API_KEY or OLLAMA_HOST");
 
     const session = createAuthorSession({ courseRoot, modules, module, provider });
@@ -181,7 +189,7 @@ program
   .command("provider")
   .description("show the resolved LLM provider")
   .action(() => {
-    const p = resolveProvider();
+    const p = resolveProvider(userConfig.provider);
     console.log(p ? `provider=${p.label} model=${p.modelId} base=${p.baseUrl}` : "none configured");
   });
 

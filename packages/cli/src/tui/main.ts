@@ -3,15 +3,20 @@ import type { ModuleDesc } from "@tutor/shared";
 import { resolveCourse } from "@tutor/shared";
 import { resolveProvider } from "@tutor/llms";
 import { createTutorSession } from "@tutor/agents";
+import type { UserConfig } from "../config";
 import { LyceumApp, SessionView } from "./App";
 
 const SCROLL_KEYS = ["shift+up", "shift+down", "pageUp", "pageDown", "home", "end"] as const;
 
-export async function runTui(courseRoot: string, initialModule?: ModuleDesc): Promise<void> {
+export async function runTui(
+  courseRoot: string,
+  initialModule: ModuleDesc | undefined,
+  userConfig: UserConfig,
+): Promise<void> {
   const modules = await resolveCourse(courseRoot);
   if (!modules.length) throw new Error(`no modules found under ${courseRoot}/modules`);
 
-  const provider = resolveProvider();
+  const provider = resolveProvider(userConfig.provider);
   if (!provider) {
     throw new Error(
       "no LLM provider configured: set OPENAI_API_KEY (or OPENAI_BASE_URL) or OLLAMA_HOST",
@@ -26,7 +31,15 @@ export async function runTui(courseRoot: string, initialModule?: ModuleDesc): Pr
     modules,
     provider,
     initialModule,
-    makeSession: (module) => createTutorSession({ courseRoot, modules, module, provider }),
+    makeSession: (module) =>
+      createTutorSession({
+        courseRoot,
+        modules,
+        module,
+        provider,
+        userPrompt: userConfig.systemPrompt,
+        skillsDir: userConfig.skillsDir,
+      }),
     onQuit: quit,
   });
   tui.addChild(app);

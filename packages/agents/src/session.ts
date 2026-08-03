@@ -40,6 +40,10 @@ export interface TutorSessionOptions {
   provider: ProviderSelection;
   /** max agent iterations per turn (default 8) */
   maxIterations?: number;
+  /** learner's coaching instructions from XDG config, appended to the policy */
+  userPrompt?: string;
+  /** user skills dir (XDG config skills/): enables list_skills/get_skill */
+  skillsDir?: string;
 }
 
 export interface TutorSession {
@@ -52,10 +56,10 @@ export interface TutorSession {
 }
 
 export function createTutorSession(opts: TutorSessionOptions): TutorSession {
-  const baseTools = buildTools({ courseRoot: opts.courseRoot, modules: opts.modules });
+  const baseTools = buildTools({ courseRoot: opts.courseRoot, modules: opts.modules, skillsDir: opts.skillsDir });
   const runtime = createAgentRuntime({
     model: buildModel(opts.provider),
-    systemPrompt: buildSystemPrompt(opts.module, buildModuleContext(opts.courseRoot, opts.module)),
+    systemPrompt: buildSystemPrompt(opts.module, buildModuleContext(opts.courseRoot, opts.module), opts.userPrompt),
     tools: [baseTools.run_tests, baseTools.read_file, baseTools.grep],
     maxIterations: opts.maxIterations ?? 8,
   } satisfies AgentRuntimeConfig);

@@ -9,7 +9,7 @@ export interface ModuleContext {
 }
 
 /** Socratic teaching policy, injected as the system prompt. Enforces AGENTS.md. */
-export function buildSystemPrompt(module: ModuleDesc, context?: ModuleContext): string {
+export function buildSystemPrompt(module: ModuleDesc, context?: ModuleContext, userPrompt?: string): string {
   const base = [
     `You are Lyceum, a Socratic self-learning coach for the module "${module.title}" (${module.dir}).`,
     `Your job is to TEACH, never to give answers.`,
@@ -38,19 +38,23 @@ export function buildSystemPrompt(module: ModuleDesc, context?: ModuleContext): 
     `Be warm, concrete, and concise. Prefer questions over statements.`,
   ].join("\n");
 
-  if (!context || (!context.readme && !context.exercise)) return base;
-
-  const sections: string[] = [base, "", "# Module context (loaded at session start)"];
-  if (context.readme && module.readme) {
-    sections.push(`--- README (${module.readme}) ---\n${context.readme}`);
+  const parts: string[] = [base];
+  if (context?.readme || context?.exercise) {
+    parts.push("", "# Module context (loaded at session start)");
+    if (context.readme && module.readme) {
+      parts.push(`--- README (${module.readme}) ---\n${context.readme}`);
+    }
+    if (context.exercise && module.student) {
+      parts.push(`--- Exercise stub (${module.student}) ---\n${context.exercise}`);
+    }
+    parts.push(
+      "",
+      "Ground every hint in this context. If the student's question refers to code not shown here,",
+      "use read_file or ask them to paste it — never guess what the code does.",
+    );
   }
-  if (context.exercise && module.student) {
-    sections.push(`--- Exercise stub (${module.student}) ---\n${context.exercise}`);
+  if (userPrompt) {
+    parts.push("", "# Your coaching instructions (from the learner's config)", userPrompt.trim());
   }
-  sections.push(
-    "",
-    "Ground every hint in this context. If the student's question refers to code not shown here,",
-    "use read_file or ask them to paste it — never guess what the code does.",
-  );
-  return sections.join("\n");
+  return parts.join("\n");
 }

@@ -180,7 +180,74 @@ export function buildTools(ctx: TutorContext) {
     },
   });
 
-  return { run_tests, read_file, grep };
+  const MAX_SKILL = 8_000; // chars of a skill's content relayed to the model
+
+  const list_skills = createTool({
+    name: "list_skills",
+    description:
+      "List the learner's available skills by name (names only — content is loaded on demand). Returns [] when no skills directory is configured.",
+    inputSchema: { type: "object", properties: {} },
+    execute: async () => {
+      if (!ctx.skillsDir) return { ok: true, skills: [] };
+      let entries: string[];
+      try {
+        entries = await readdir(ctx.skillsDir);
+      } catch {
+        return { ok: true, skills: [] }; // missing/unreadable dir: no skills
+      }
+      return {
+        ok: true,
+        skills: entries.filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3)).sort(),
+      };
+    },
+  });
+
+  const get_skill = createTool({
+    name: "get_skill",
+    description:
+      "Load ONE user skill's content by name (from list_skills). Only the requested skill is read; content is capped. Use it when a skill would genuinely change how you teach this session.",
+    inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+    execute: async (input: { name: string }) => {
+      if (!ctx.skillsDir) return { ok: false, message: "no skills directory configured" };
+      const name = input.name.trim();
+      // Plain filename only: no separators, no traversal, no dots-only names.
+      if (!name || name.includes("/") || name.includes("\\") || name === "." || name === "..") {
+        return { ok: false, message: "invalid skill name" };
+      }
+      let entries: string[];
+      try {
+        entries = await readdir(ctx.skillsDir);
+      } catch {
+        return { ok: false, message: `no skills directory at ${ctx.skillsDir}` };
+      }
+      const target = entries.find((f) => f.toLowerCase() === `${name.toLowerCase()}.md`);
+      if (!target) return { ok: false, message: `no skill named "${name}"` };
+      // Resolve and re-check: a symlinked skill file must stay inside the dir.
+      const abs = join(ctx.skillsDir, target);
+      let real: string;
+      try {
+        real = await realpath(abs);
+      } catch {
+        return { ok: false, message: `cannot read skill "${name}"` };
+      }
+      if (!withinRoot(rootOf(ctx.skillsDir), real)) {
+        return { blocked: true, message: "skill path escapes the skills directory" };
+      }
+      let text: string;
+      try {
+        text = await readFile(real, "utf8");
+      } catch {
+        return { ok: false, message: `cannot read skill "${name}"` };
+      }
+      return {
+        ok: true,
+        name,
+        content: text.length > MAX_SKILL ? `${text.slice(0, MAX_SKILL)}\n…(truncated)` : text,
+      };
+    },
+  });
+
+  return { run_tests, read_file, grep, list_skills, get_skill };
 }
 
 /**
