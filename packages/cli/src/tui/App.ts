@@ -34,19 +34,42 @@ const notePrefix = "· ";
 /**
  * Fixed-height, auto-following transcript. Assistant lines render as Markdown,
  * user/note lines as plain (ANSI-aware) text.
+ *
+ * Scroll: rows are passed in full and ScrollView windows them by scrollOffset —
+ * totalRows is intentionally NEVER set (setting it makes ScrollView.render
+ * ignore the offset and freeze the viewport on the top rows).
+ *
+ * Streaming: deltas coalesce to one live re-render per ~33ms tick, and settled
+ * lines are cached, so a delta costs only the live line, not the whole history.
  */
 export class Transcript extends ScrollView {
   private renderers: Array<{ who: ChatLine["who"]; renderer: Text | Markdown }> = [];
   private live: Markdown | null = null;
   private contentWidth = 80;
   private followTail = true;
+  /** Rendered rows of the settled renderers; invalidated on add/commit/resize. */
+  private settledRows: string[] = [];
+  /** Latest accumulated stream text, applied at most once per tick. */
+  private pendingLive: string | null = null;
+  private liveTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly LIVE_FLUSH_MS = 33;
 
   constructor() {
     super([], { height: 10, scrollbar: "auto" });
   }
 
   setContentWidth(width: number): void {
-    this.contentWidth = Math.max(10, width);
+    const w = Math.max(10, width);
+    if (w === this.contentWidth) return;
+    this.contentWidth = w;
+    this.renderSettled(); // width changed: settled wraps are stale
+    this.rebuild();
+  }
+
+  /** Re-follow the tail after a viewport height change (e.g. terminal resize). */
+  override setHeight(height: number): void {
+    super.setHeight(height);
+    if (this.followTail) this.scrollToBottom();
   }
 
   add(line: ChatLine): void {
@@ -59,30 +82,38 @@ export class Transcript extends ScrollView {
         renderer: new Text(line.who === "note" ? style.dim(prefix + line.text) : prefix + line.text, 0, 0),
       });
     }
+    this.renderSettled();
     this.rebuild();
   }
 
   /** Update the in-flight assistant stream (accumulatedText per delta). */
   setLive(text: string): void {
-    if (!this.live) {
-      this.live = new Markdown(text, 0, 0, markdownTheme);
-    } else {
-      this.live.setText(text);
-    }
-    this.rebuild();
+    this.pendingLive = text;
+    if (this.liveTimer) return;
+    this.liveTimer = setTimeout(() => {
+      this.liveTimer = null;
+      this.flushLive();
+    }, Transcript.LIVE_FLUSH_MS);
   }
 
   /** Promote the streaming reply to a settled assistant message. */
   commitLive(): void {
+    this.flushLive(); // apply any un-rendered tail before promoting
     if (this.live) {
       this.renderers.push({ who: "assistant", renderer: this.live });
       this.live = null;
+      this.renderSettled();
     }
     this.rebuild();
   }
 
   /** Discard the partial stream (e.g. run failed mid-generation). */
   dropLive(): void {
+    if (this.liveTimer) {
+      clearTimeout(this.liveTimer);
+      this.liveTimer = null;
+    }
+    this.pendingLive = null;
     this.live = null;
     this.rebuild();
   }
@@ -92,13 +123,32 @@ export class Transcript extends ScrollView {
     if (follow) this.scrollToBottom();
   }
 
-  private rebuild(): void {
-    const rows: string[] = [];
+  /** Apply the latest pending stream text (if any) to the live markdown. */
+  private flushLive(): void {
+    const t = this.pendingLive;
+    this.pendingLive = null;
+    if (t === null) return;
+    if (!this.live) {
+      this.live = new Markdown(t, 0, 0, markdownTheme);
+    } else {
+      this.live.setText(t);
+    }
+    this.rebuild();
+  }
+
+  private renderSettled(): void {
     const w = this.contentWidth;
+    const rows: string[] = [];
     for (const { renderer } of this.renderers) rows.push(...renderer.render(w));
-    if (this.live) rows.push(...this.live.render(w));
+    this.settledRows = rows;
+  }
+
+  private rebuild(): void {
+    const w = this.contentWidth;
+    // Settled rows are cached; only the live markdown re-renders per flush.
+    const rows = this.live ? [...this.settledRows, ...this.live.render(w)] : this.settledRows;
     this.setLines(rows);
-    this.setTotalRows(rows.length);
+    // NOTE: never setTotalRows — see the class comment.
     if (this.followTail) this.scrollToBottom();
   }
 }
@@ -196,6 +246,9 @@ export class SessionView extends Container {
     if (!text || this.busy) return;
     this.busy = true;
     this.input.setValue("");
+    // Sending a message ends history-browsing: snap back to the tail so the
+    // new exchange is visible.
+    this.transcript.setFollowTail(true);
     this.transcript.add({ who: "user", text });
     this.setBusyStatus();
     this.tui.requestRender();
