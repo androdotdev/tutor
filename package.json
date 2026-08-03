@@ -1,0 +1,24 @@
+{
+  "name": "tutor",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "lyceum": "bun run packages/cli/src/bin.ts",
+    "tutor": "bun run packages/cli/src/bin.ts",
+    "build": "bun run --cwd packages/cli build",
+    "test": "bun test packages/*/test",
+    "typecheck": "bunx tsc --noEmit",
+    "lint": "eslint packages",
+    "smoke": "bun run packages/agents/smoke.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "^22.0.0",
+    "eslint": "10.8.0",
+    "globals": "17.9.0",
+    "typescript-eslint": "8.65.0"
+  }
+}

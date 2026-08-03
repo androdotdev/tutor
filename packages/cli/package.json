@@ -1,0 +1,30 @@
+{
+  "name": "@tutor/cli",
+  "version": "0.0.2",
+  "type": "module",
+  "bin": {
+    "lyceum": "./dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "bun": ">=1.3.14"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "bunx tsc --noEmit",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "@oh-my-pi/pi-tui": "17.2.5",
+    "@oh-my-pi/pi-natives": "17.2.5",
+    "commander": "15.0.0"
+  },
+  "devDependencies": {
+    "tsup": "8.5.1"
+  }
+}

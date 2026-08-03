@@ -1,0 +1,34 @@
+name: Publish CLI
+
+# Tag with cli-v<semver> (e.g. cli-v0.0.2) to build and publish that version
+# of @tutor/cli to npm. Requires the NPM_TOKEN secret.
+on:
+  push:
+    tags:
+      - "cli-v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#cli-v}"
+          echo "Publishing @tutor/cli@${VERSION}"
+          jq --arg v "$VERSION" '.version = $v' packages/cli/package.json > tmp.json && mv tmp.json packages/cli/package.json
+      - name: Build bundle
+        run: bun run --cwd packages/cli build
+      - name: Authenticate with npm
+        run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish to npm
+        run: npm publish --access public
+        working-directory: packages/cli
