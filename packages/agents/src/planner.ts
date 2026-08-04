@@ -5,17 +5,16 @@ import { createAgentRuntime, type AgentRuntimeConfig } from "@cline/agents";
 import { createTool, type AgentTool } from "@cline/shared";
 import { buildModel, type ProviderSelection } from "@tutor/llms";
 import type { CourseOutline, ModuleDifficulty, PlannedModule, ResearchReport } from "./pipeline-types.ts";
+import { progressLogger } from "./progress";
 
 export interface PlanOptions {
   provider: ProviderSelection;
   prompt: string;
   research?: ResearchReport | null;
   moduleCountOverride?: number;
+  /** Stream the model's reasoning/text and log tool calls to stdout. */
+  progress?: boolean;
 }
-
-/** Appended when the first attempt produced no valid submit_outline call. */
-const RETRY_PROMPT =
-  "\n\nYour previous reply did not produce a valid submit_outline call (modules must be 2-8). Call submit_outline once with a valid outline now.";
 
 const DIFFICULTIES = ["intro", "core", "capstone"] as const;
 
@@ -35,53 +34,72 @@ function buildPlanSystemPrompt(opts: PlanOptions): string {
   return base + research + cap;
 }
 
-/** Hand-rolled shape guard for the submit_outline payload. */
-function parseOutline(input: unknown): CourseOutline | null {
-  if (typeof input !== "object" || input === null) return null;
+/** Validation errors for a submit_outline payload; null when valid. */
+export function outlineErrors(input: unknown): string[] | null {
+  if (typeof input !== "object" || input === null) {
+    return ["submit_outline arguments were not a JSON object"];
+  }
   const obj = input as Record<string, unknown>;
-  const name = obj.name;
-  const topic = obj.topic;
-  const modules = obj.modules;
-  if (typeof name !== "string" || name.length === 0) return null;
-  if (typeof topic !== "string" || topic.length === 0) return null;
-  // 2..8 modules is a hard cap: anything outside is rejected outright.
-  if (!Array.isArray(modules) || modules.length < 2 || modules.length > 8) return null;
-
-  const parsed: PlannedModule[] = [];
-  for (const raw of modules) {
-    if (typeof raw !== "object" || raw === null) return null;
-    const m = raw as Record<string, unknown>;
-    const id = m.id;
-    const title = m.title;
-    const concepts = m.concepts;
-    const difficulty = m.difficulty;
-    const sources = m.sources;
-
-    if (typeof id !== "string" || id.length === 0) return null;
-    if (typeof title !== "string" || title.length === 0) return null;
-    if (!Array.isArray(concepts) || concepts.length === 0) return null;
-    for (const c of concepts) {
-      if (typeof c !== "string" || c.length === 0) return null;
+  const errors: string[] = [];
+  if (typeof obj.name !== "string" || obj.name.length === 0) errors.push("name is missing or empty");
+  if (typeof obj.topic !== "string" || obj.topic.length === 0) errors.push("topic is missing or empty");
+  if (!Array.isArray(obj.modules)) {
+    errors.push("modules is missing or not an array");
+    return errors;
+  }
+  if (obj.modules.length < 2 || obj.modules.length > 8) {
+    errors.push(`modules must be 2-8, got ${obj.modules.length}`);
+  }
+  obj.modules.forEach((raw, i) => {
+    if (typeof raw !== "object" || raw === null) {
+      errors.push(`modules[${i}] is not an object`);
+      return;
     }
-    if (!DIFFICULTIES.includes(difficulty as ModuleDifficulty)) return null;
-    if (sources !== undefined) {
-      if (!Array.isArray(sources)) return null;
-      for (const s of sources) {
-        if (typeof s !== "string") return null;
+    const m = raw as Record<string, unknown>;
+    if (typeof m.id !== "string" || m.id.length === 0) errors.push(`modules[${i}].id is missing or empty`);
+    if (typeof m.title !== "string" || m.title.length === 0) errors.push(`modules[${i}].title is missing or empty`);
+    if (!Array.isArray(m.concepts) || m.concepts.length === 0) {
+      errors.push(`modules[${i}].concepts is missing or empty`);
+    } else {
+      m.concepts.forEach((c, j) => {
+        if (typeof c !== "string" || c.length === 0) errors.push(`modules[${i}].concepts[${j}] must be a non-empty string`);
+      });
+    }
+    if (!DIFFICULTIES.includes(m.difficulty as ModuleDifficulty)) {
+      errors.push(`modules[${i}].difficulty must be one of intro|core|capstone`);
+    }
+    if (m.sources !== undefined) {
+      if (!Array.isArray(m.sources)) {
+        errors.push(`modules[${i}].sources must be an array of strings`);
+      } else {
+        m.sources.forEach((s, j) => {
+          if (typeof s !== "string") errors.push(`modules[${i}].sources[${j}] must be a string`);
+        });
       }
     }
+  });
+  return errors.length ? errors : null;
+}
 
+/** Hand-rolled shape guard for the submit_outline payload. */
+function parseOutline(input: unknown): CourseOutline | null {
+  if (outlineErrors(input)) return null;
+  const obj = input as Record<string, unknown>;
+
+  const parsed: PlannedModule[] = [];
+  for (const raw of obj.modules as unknown[]) {
+    const m = raw as Record<string, unknown>;
     const module: PlannedModule = {
-      id,
-      title,
-      concepts: concepts as string[],
-      difficulty: difficulty as ModuleDifficulty,
+      id: m.id as string,
+      title: m.title as string,
+      concepts: m.concepts as string[],
+      difficulty: m.difficulty as ModuleDifficulty,
     };
-    if (sources !== undefined) module.sources = sources as string[];
+    if (m.sources !== undefined) module.sources = m.sources as string[];
     parsed.push(module);
   }
 
-  return { name, topic, modules: parsed };
+  return { name: obj.name as string, topic: obj.topic as string, modules: parsed };
 }
 
 /** One fresh runtime + capture attempt; null means "invalid outline, retry". */
@@ -90,7 +108,8 @@ async function runOutlineAttempt(
   systemPrompt: string,
   input: string,
   clamped: number | null,
-): Promise<CourseOutline | null> {
+  progress?: boolean,
+): Promise<{ outline: CourseOutline | null; called: boolean; payload: unknown; outputText: string }> {
   let captured: unknown = null;
   const submitOutlineTool: AgentTool = createTool({
     name: "submit_outline",
@@ -128,6 +147,7 @@ async function runOutlineAttempt(
     systemPrompt,
     tools: [submitOutlineTool],
     maxIterations: 6,
+    hooks: progress ? { onEvent: progressLogger("plan") } : undefined,
   } satisfies AgentRuntimeConfig);
 
   const result = await runtime.run(input);
@@ -135,10 +155,19 @@ async function runOutlineAttempt(
     throw new Error("Planner did not produce a valid course outline");
   }
 
-  const outline = parseOutline(captured);
-  if (!outline) return null;
-  if (clamped !== null && outline.modules.length !== clamped) return null;
-  return outline;
+  let outline = parseOutline(captured);
+  if (outline && clamped !== null && outline.modules.length !== clamped) outline = null;
+  return { outline, called: captured !== null, payload: captured, outputText: result.outputText };
+}
+
+/** A one-line sketch of the payload for the final CLI error. */
+function sketch(payload: unknown): string {
+  try {
+    const s = JSON.stringify(payload);
+    return s.length > 200 ? `${s.slice(0, 200)}…` : s;
+  } catch {
+    return String(payload);
+  }
 }
 
 /** Run the plan stage: at most one retry before giving up on the outline. */
@@ -146,11 +175,26 @@ export async function planCourse(opts: PlanOptions): Promise<CourseOutline> {
   const systemPrompt = buildPlanSystemPrompt(opts);
   const clamped = clampedCount(opts.moduleCountOverride);
 
-  const first = await runOutlineAttempt(opts.provider, systemPrompt, opts.prompt, clamped);
-  if (first) return first;
+  const first = await runOutlineAttempt(opts.provider, systemPrompt, opts.prompt, clamped, opts.progress);
+  if (first.outline) return first.outline;
 
-  const second = await runOutlineAttempt(opts.provider, systemPrompt, opts.prompt + RETRY_PROMPT, clamped);
-  if (second) return second;
+  const errors = first.called ? outlineErrors(first.payload) : null;
+  const clampNote = clamped !== null ? `\nThe course must have exactly ${clamped} modules (you delivered ${outlineCount(first.payload)}).` : "";
+  const note = errors
+    ? `\n\nYour previous submit_outline call was invalid:\n- ${errors.join("\n- ")}${clampNote}\nFix those fields and call submit_outline once with a valid outline.`
+    : `\n\nYour previous reply did not call submit_outline. Call submit_outline once with a valid outline ({ name, topic, modules: [{ id, title, concepts, difficulty }] })${clampNote}`;
+  const second = await runOutlineAttempt(opts.provider, systemPrompt, `${opts.prompt}${note}`, clamped, opts.progress);
+  if (second.outline) return second.outline;
 
-  throw new Error("Planner did not produce a valid course outline");
+  const why = second.called
+    ? `submit_outline payload still invalid: ${(outlineErrors(second.payload) ?? ["module count mismatch"]).join("; ")} (payload: ${sketch(second.payload)})`
+    : `the model finished without calling submit_outline; last output: ${JSON.stringify(second.outputText.slice(0, 200))}`;
+  throw new Error(`Plan stage failed: ${why}`);
+}
+
+/** Module count inside a captured payload; 0 when not parseable. */
+function outlineCount(payload: unknown): number {
+  if (typeof payload !== "object" || payload === null) return 0;
+  const modules = (payload as Record<string, unknown>).modules;
+  return Array.isArray(modules) ? modules.length : 0;
 }

@@ -82,6 +82,28 @@ beforeAll(() => {
               enc(chunk({ choices: [{ delta: { content: "done" } }] }));
               enc(chunk({ choices: [{ delta: {}, finish_reason: "stop" }] }));
             }
+          } else if (mode === "bad") {
+            // submit_findings called but always missing source_url; fires on
+            // both attempts (each attempt makes 2 calls, so even calls).
+            if (call % 2 === 0) {
+              enc(
+                chunk({
+                  choices: [
+                    {
+                      delta: {
+                        tool_calls: tool("submit_findings", {
+                          findings: [{ claim: "no source attached" }],
+                        }),
+                      },
+                    },
+                  ],
+                }),
+              );
+              enc(chunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }));
+            } else {
+              enc(chunk({ choices: [{ delta: { content: "nothing here" } }] }));
+              enc(chunk({ choices: [{ delta: {}, finish_reason: "stop" }] }));
+            }
           } else {
             enc(chunk({ choices: [{ delta: { content: "nothing here" } }] }));
             enc(chunk({ choices: [{ delta: {}, finish_reason: "stop" }] }));
@@ -147,6 +169,14 @@ describe("runResearch", () => {
     callCount = 0;
     await expect(
       runResearch({ provider, prompt: "topic", webSearchTool: webSearchTool() }),
-    ).rejects.toThrow(/valid findings report/);
+    ).rejects.toThrow(/Research stage failed: the model finished without calling submit_findings/);
+  });
+
+  test("names the exact validation problem when submit_findings is malformed", async () => {
+    mode = "bad";
+    callCount = 0;
+    await expect(
+      runResearch({ provider, prompt: "topic", webSearchTool: webSearchTool() }),
+    ).rejects.toThrow(/findings\[0\]\.source_url is missing or not a string/);
   });
 });

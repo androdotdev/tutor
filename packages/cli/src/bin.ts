@@ -167,7 +167,13 @@ program
       if (existingPlan && existingPlan.prompt === prompt) {
         const left = existingPlan.modules.filter((m) => m.status !== "drafted").length;
         console.log(`resuming ${targetDir} (${left} module(s) left)`);
-        const result = await buildCourse({ provider, courseRoot: targetDir, outline: existingPlan.outline, prompt });
+        const result = await buildCourse({
+          provider,
+          courseRoot: targetDir,
+          outline: existingPlan.outline,
+          prompt,
+          progress: true,
+        });
         printBuildSummary(result, existingPlan.outline.modules.length);
         if (result.failed.length) throw new CliError(`${result.failed.length} module(s) failed — re-run lyceum new to resume`);
         return;
@@ -184,7 +190,7 @@ program
       let context = prompt;
       if (!opts.yes) {
         console.log("clarifying…");
-        const { recap } = await runClarify({ provider, prompt });
+        const { recap } = await runClarify({ provider, prompt, progress: true });
         context = `${prompt}\n\nClarified: ${recap}`;
       }
 
@@ -194,18 +200,24 @@ program
       if (opts.research !== false) {
         console.log("researching…");
         const { web_search } = buildAuthorTools({ courseRoot: targetDir, modules: [] });
-        research = await runResearch({ provider, prompt: context, webSearchTool: web_search });
+        research = await runResearch({ provider, prompt: context, webSearchTool: web_search, progress: true });
       }
 
       // 3. Plan.
       console.log("planning…");
-      const outline = await planCourse({ provider, prompt: context, research, moduleCountOverride: moduleCount });
+      const outline = await planCourse({
+        provider,
+        prompt: context,
+        research,
+        moduleCountOverride: moduleCount,
+        progress: true,
+      });
       saveCoursePlan(newCoursePlan(targetDir, prompt, outline));
       console.log(`planned ${outline.modules.length} modules: ${outline.modules.map((m) => m.title).join(", ")}`);
 
       // 4. Author every module (continue-on-error; resume via the checkpoint).
       console.log("authoring…");
-      const result = await buildCourse({ provider, courseRoot: targetDir, outline, prompt });
+      const result = await buildCourse({ provider, courseRoot: targetDir, outline, prompt, progress: true });
       printBuildSummary(result, outline.modules.length);
       if (result.failed.length) throw new CliError(`${result.failed.length} module(s) failed — re-run lyceum new to resume`);
       console.log(`Open it:  LYCEUM_COURSE=${targetDir} lyceum`);
