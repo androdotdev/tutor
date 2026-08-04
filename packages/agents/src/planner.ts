@@ -187,10 +187,17 @@ export async function planCourse(opts: PlanOptions): Promise<CourseOutline> {
   const second = await runOutlineAttempt(opts.provider, systemPrompt, `${opts.prompt}${note}`, clamped, opts.progress);
   if (second.outline) return second.outline;
 
+  const emptyArgs =
+    second.called &&
+    typeof second.payload === "object" &&
+    second.payload !== null &&
+    Object.keys(second.payload as object).length === 0;
   const why = second.called
     ? `submit_outline payload still invalid: ${(outlineErrors(second.payload) ?? ["module count mismatch"]).join("; ")} (payload: ${sketch(second.payload)})`
     : `the model finished without calling submit_outline; last output: ${JSON.stringify(second.outputText.slice(0, 200))}`;
-  throw new Error(`Plan stage failed: ${why}`);
+  throw new Error(
+    `Plan stage failed: ${why}${emptyArgs ? " — submit_outline arrived with empty arguments; your provider may be stripping tool-call arguments" : ""}`,
+  );
 }
 
 /** Module count inside a captured payload; 0 when not parseable. */

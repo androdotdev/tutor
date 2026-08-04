@@ -100,6 +100,22 @@ describe("web_search tool", () => {
     cleanup();
   });
 
+  test("empty query is rejected loudly instead of searching undefined", async () => {
+    const { ctx, cleanup } = makeCtx();
+    let searched = false;
+    const tools = buildAuthorTools(ctx, {
+      search: async (q: string) => {
+        searched = true;
+        return [{ title: "T", url: "https://u", snippet: `q=${q}` }];
+      },
+    });
+    await expect(tools.web_search.execute({ query: "  " })).rejects.toThrow(/without a query/);
+    // Runtime may deliver {} despite the required schema (stripped args).
+    await expect(tools.web_search.execute({} as { query: string })).rejects.toThrow(/without a query/);
+    expect(searched).toBe(false);
+    cleanup();
+  });
+
   test("learner tool set does NOT expose web_search", () => {
     const { ctx, cleanup } = makeCtx();
     const learner = buildTools(ctx);
