@@ -6,11 +6,14 @@ import {
   type AskUserFn,
   type AskUserQA,
 } from "@tutor/core";
+import { progressLogger } from "./progress";
 
 export interface ClarifyOptions {
   provider: ProviderSelection;
   prompt: string;
   askUser?: AskUserFn;
+  /** Stream the model's reasoning/text and log tool calls to stdout. */
+  progress?: boolean;
 }
 
 export interface ClarifyResult {
@@ -36,6 +39,7 @@ export async function runClarify(opts: ClarifyOptions): Promise<ClarifyResult> {
     systemPrompt: buildClarifyPrompt(opts.prompt),
     tools: [tool],
     maxIterations: MAX_CLARIFY_ITERATIONS,
+    hooks: opts.progress ? { onEvent: progressLogger("clarify") } : undefined,
   } satisfies AgentRuntimeConfig);
 
   const result = await runtime.run(opts.prompt);

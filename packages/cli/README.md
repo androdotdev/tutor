@@ -53,6 +53,9 @@ Generate a course from a description. Four stages run in sequence:
    first: `exercise/`, `tests/`, `solutions/`), continuing past a failing
    module; each module's status is recorded in the checkpoint.
 
+Every stage streams its reasoning and tool calls live, so a run never looks
+hung; a failed research or plan stage reports exactly what the model got wrong.
+
 ```
 lyceum new "Express routing for beginners" ./express-course --modules 4
 ```
