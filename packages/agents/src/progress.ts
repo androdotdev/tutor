@@ -26,9 +26,19 @@ export function progressLogger(label: string): (event: AgentRuntimeEvent) => voi
       case "assistant-text-delta":
         process.stdout.write(event.text);
         break;
-      case "tool-started":
-        process.stdout.write(`\n[${label}] → ${event.toolCall.toolName} ${summarizeInput(event.toolCall.input)}\n`);
+      case "tool-started": {
+        const tc = event.toolCall;
+        let line = `\n[${label}] → ${tc.toolName} ${summarizeInput(tc.input)}`;
+        const parseError = (tc.metadata as { inputParseError?: unknown } | undefined)?.inputParseError;
+        const rawInput = (tc.metadata as { rawInputText?: unknown } | undefined)?.rawInputText;
+        if (parseError) {
+          const raw = typeof rawInput === "string" ? rawInput : "";
+          const detail = raw.length > 60 ? `${raw.slice(0, 60)}…` : raw;
+          line += ` (unparseable args${detail ? `: ${JSON.stringify(detail)}` : ""})`;
+        }
+        process.stdout.write(`${line}\n`);
         break;
+      }
       case "tool-finished": {
         const failed = event.message.content.some((p) => p.type === "tool-result" && p.isError);
         process.stdout.write(`[${label}] ${failed ? "failed" : "ok"} ${event.toolCall.toolName}\n`);

@@ -140,6 +140,7 @@ async function runOutlineAttempt(
       captured = input;
       return { ok: true };
     },
+    lifecycle: { completesRun: true },
   });
 
   const runtime = createAgentRuntime({

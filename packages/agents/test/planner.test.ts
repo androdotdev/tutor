@@ -159,9 +159,7 @@ describe("planCourse", () => {
     };
     script = [
       { tool: { name: "submit_outline", args: short } },
-      { content: "done" },
       { tool: { name: "submit_outline", args: exact } },
-      { content: "done" },
     ];
     callCount = 0;
 
