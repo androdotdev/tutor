@@ -140,16 +140,31 @@ interface SseChunk {
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 }
 
-function parseChunk(chunk: SseChunk, events: AgentModelEvent[]): void {
+function parseChunk(chunk: SseChunk, events: AgentModelEvent[], firstIdByIndex: Map<number, string>): void {
   const choice = chunk.choices?.[0];
   if (choice?.delta?.content) {
     events.push({ type: "text-delta", text: choice.delta.content });
   }
   for (const tc of choice?.delta?.tool_calls ?? []) {
+    const index = tc.index ?? 0;
+    // OpenAI-style streaming sends `id` + `name` in the first delta of a tool
+    // call and `index` + `arguments` fragments afterwards. Remember the id per
+    // index so every fragment of one call carries the same toolCallId; without
+    // this the runtime keys the first fragment by its id and later fragments by
+    // `tool_<index>`, splitting one call into two records (one with a name and
+    // no args, one with args and no name that is dropped as missing_name).
+    let toolCallId: string | undefined;
+    const remembered = firstIdByIndex.get(index);
+    if (typeof tc.id === "string") {
+      toolCallId = tc.id;
+      if (remembered === undefined) firstIdByIndex.set(index, tc.id);
+    } else {
+      toolCallId = remembered;
+    }
     events.push({
       type: "tool-call-delta",
-      index: tc.index ?? 0,
-      toolCallId: typeof tc.id === "string" ? tc.id : undefined,
+      index,
+      toolCallId,
       toolName: tc.function?.name,
       inputText: tc.function?.arguments,
     });
@@ -195,6 +210,7 @@ export function buildModel(sel: ProviderSelection): AgentModel {
       };
 
       const events: AgentModelEvent[] = [];
+      const firstIdByIndex = new Map<number, string>();
       let finished = false;
       for await (const chunk of sse(`${sel.baseUrl}/chat/completions`, {
         method: "POST",
@@ -204,7 +220,7 @@ export function buildModel(sel: ProviderSelection): AgentModel {
           ? AbortSignal.any([request.signal, AbortSignal.timeout(60_000)])
           : AbortSignal.timeout(60_000),
       })) {
-        parseChunk(chunk, events);
+        parseChunk(chunk, events, firstIdByIndex);
         if (events.some((e) => e.type === "finish")) finished = true;
         // Yield incrementally so the runtime forwards deltas live (streaming
         // UI) instead of only after the HTTP stream closes.
