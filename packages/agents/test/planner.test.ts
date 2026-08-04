@@ -136,7 +136,7 @@ describe("planCourse", () => {
     ];
     callCount = 0;
 
-    await expect(planCourse({ provider: provider(), prompt: "anything" })).rejects.toThrow(/valid course outline/);
+    await expect(planCourse({ provider: provider(), prompt: "anything" })).rejects.toThrow(/Plan stage failed: the model finished without calling submit_outline/);
   });
 
   test("moduleCountOverride requires an exact module count, retrying on mismatch", async () => {
