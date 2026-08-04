@@ -3,9 +3,17 @@
 // Model turn 1 -> tool_calls run_tests("01"); turn 2 (after tool result) -> final text.
 import { createTutorSession } from "./src/session.ts";
 import { resolveProvider } from "../llms/src/provider.ts";
+import { scaffoldCourse } from "@tutor/core";
 import { resolveCourse } from "@tutor/shared";
+import { rmSync } from "node:fs";
 
 let callCount = 0;
+
+// Own fixture (like smoke-author.ts): a throwaway scaffolded course, so the
+// smoke never depends on a developer's local course path.
+const courseRoot = "/tmp/lyceum-smoke-course";
+rmSync(courseRoot, { recursive: true, force: true });
+await scaffoldCourse({ name: "smoke", moduleCount: 2 }, courseRoot);
 
 const mock = Bun.serve({
   port: 0,
@@ -56,12 +64,12 @@ const provider = resolveProvider();
 if (!provider) throw new Error("provider not resolved");
 console.log("provider:", provider.provider, provider.modelId, provider.baseUrl);
 
-const modules = await resolveCourse("/home/andro/coding/express-course");
+const modules = await resolveCourse(courseRoot);
 const module = modules.find((m) => m.id === "01");
 if (!module) throw new Error("module 01 missing");
 
 const session = createTutorSession({
-  courseRoot: "/home/andro/coding/express-course",
+  courseRoot,
   modules,
   module,
   provider,

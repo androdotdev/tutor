@@ -1,4 +1,5 @@
 import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 export interface ScaffoldOptions {
@@ -107,8 +108,21 @@ These rules guide any AI tool used on this course, including lyceum.
 - solutions/ and project solution files are PERMANENTLY redacted. Do not bypass.
 `;
 
-async function writeModuleFiles(modulesDir: string, id: string, title: string, topic: string | undefined): Promise<string> {
-  const dir = `${id}-${slugify(title)}`;
+async function writeModuleFiles(
+  modulesDir: string,
+  id: string,
+  title: string,
+  topic: string | undefined,
+): Promise<{ id: string; dir: string }> {
+  let candidate = Number(id);
+  let dir = `${pad2(candidate)}-${slugify(title)}`;
+  // Never clobber: if the target module dir already exists (re-run, id
+  // collision, resume after a partial failure), bump to the next free id.
+  while (existsSync(join(modulesDir, dir))) {
+    candidate += 1;
+    dir = `${pad2(candidate)}-${slugify(title)}`;
+  }
+  const finalId = pad2(candidate);
   const modDir = join(modulesDir, dir);
   await mkdir(join(modDir, "exercise"), { recursive: true });
   await mkdir(join(modDir, "tests"), { recursive: true });
@@ -117,23 +131,35 @@ async function writeModuleFiles(modulesDir: string, id: string, title: string, t
   await writeFile(join(modDir, "exercise", "index.js"), EXERCISE_STUB);
   await writeFile(join(modDir, "tests", "index.test.js"), TEST_STUB);
   await writeFile(join(modDir, "solutions", ".gitkeep"), "");
-  return dir;
+  return { id: finalId, dir };
 }
 
-/** Create a fresh course tree per the SKILL.md spec. Deterministic — no LLM. */
+/** Create a fresh course tree per the SKILL.md spec. Deterministic — no LLM.
+ * Re-running against a dir that already has modules/ switches to append mode:
+ * root docs are left untouched, modules continue from the next free id. */
 export async function scaffoldCourse(input: ScaffoldOptions, outDir: string): Promise<ScaffoldResult> {
   const count = Math.max(1, Math.min(12, input.moduleCount ?? 3));
   const modulesDir = join(outDir, "modules");
+  let existing = false;
+  try {
+    existing = (await readdir(outDir)).includes("modules");
+  } catch {
+    // outDir does not exist yet — fresh scaffold below.
+  }
+  if (!existing) {
+    await mkdir(outDir, { recursive: true });
+    await writeFile(join(outDir, "README.md"), courseReadme(input.name, input.topic, count));
+    await writeFile(join(outDir, "AGENTS.md"), COURSE_AGENTS_MD);
+  }
   await mkdir(modulesDir, { recursive: true });
-  await writeFile(join(outDir, "README.md"), courseReadme(input.name, input.topic, count));
-  await writeFile(join(outDir, "AGENTS.md"), COURSE_AGENTS_MD);
 
+  const startId = existing ? Number(await nextModuleId(outDir)) : 0;
   const modules: ScaffoldedModule[] = [];
   for (let i = 0; i < count; i++) {
-    const id = pad2(i);
+    const id = pad2(startId + i);
     const title = moduleTitle(input.name, input.topic, i, count);
-    const dir = await writeModuleFiles(modulesDir, id, title, input.topic);
-    modules.push({ id, dir, title });
+    const { id: finalId, dir } = await writeModuleFiles(modulesDir, id, title, input.topic);
+    modules.push({ id: finalId, dir, title });
   }
   return { root: outDir, modules };
 }
@@ -154,6 +180,6 @@ export async function addModule(
 ): Promise<ScaffoldedModule> {
   const id = opts.id ?? (await nextModuleId(courseRoot));
   const title = opts.title;
-  const dir = await writeModuleFiles(join(courseRoot, "modules"), id, title, opts.topic);
-  return { id, dir, title };
+  const { id: finalId, dir } = await writeModuleFiles(join(courseRoot, "modules"), id, title, opts.topic);
+  return { id: finalId, dir, title };
 }
