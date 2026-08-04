@@ -25,7 +25,7 @@ const MAX_CLARIFY_ITERATIONS = 10;
 
 function buildClarifyPrompt(topic: string): string {
   return [
-    "You are planning an interactive self-learning course for the topic below. Ask up to 3 clarifying questions ONE AT A TIME using the ask_user tool: learner level, scope, format (interactive exercises vs reading vs both), and any module-count preference. After each answer you may ask another question or finish. When you have enough, reply with a single short recap paragraph naming the topic, target level, and planned module count. Stop calling tools once you recap.",
+    "You are planning an interactive self-learning course for the topic below. Ask up to 3 clarifying questions ONE AT A TIME using the ask_user tool: learner level, scope, format (interactive exercises vs reading vs both), and any module-count preference. ALWAYS pass the question text in the ask_user \"question\" argument — never call it empty. After each answer you may ask another question or finish. When you have enough, reply with a single short recap paragraph naming the topic, target level, and planned module count. Stop calling tools once you recap.",
     "",
     `Topic: ${topic}`,
   ].join("\n");
