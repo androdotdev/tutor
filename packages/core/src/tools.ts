@@ -4,6 +4,7 @@ import { isSpoiler, REDACTED_MESSAGE, type ModuleDesc } from "@tutor/shared";
 import { join, dirname, basename, relative, sep } from "node:path";
 import { mkdir, readFile, realpath, readdir, writeFile } from "node:fs/promises";
 import { existsSync, lstatSync, statSync } from "node:fs";
+import { searchWeb, type SearchFn } from "./web-search";
 import type { TutorContext } from "./types";
 
 const MAX_OUTPUT = 60_000; // chars of test output relayed to the model
@@ -251,12 +252,29 @@ export function buildTools(ctx: TutorContext) {
 }
 
 /**
- * Author-mode tool set: the agent can READ the course, RUN the grader, and WRITE
- * module files (README / exercise stub / tests). `solutions/` stays hard-redacted
- * for both read and write, so the learner can't peek or pollute the teacher's copy.
+ * Author-mode tool set: the agent can READ the course, RUN the grader, WRITE
+ * module files (README / exercise stub / tests), and RESEARCH topics on the web.
+ * `solutions/` stays hard-redacted for both read and write, so the learner
+ * can't peek or pollute the teacher's copy.
  */
-export function buildAuthorTools(ctx: TutorContext) {
+export function buildAuthorTools(ctx: TutorContext, deps: { search?: SearchFn } = {}) {
   const { run_tests, read_file, grep } = buildTools(ctx);
+  const search = deps.search ?? searchWeb;
+
+  const web_search = createTool({
+    name: "web_search",
+    description:
+      "Search the web (no API key) for up to 5 results: title, URL, snippet each. Use it to research module topics — official docs, best practices, examples. Results are EXTERNAL pages: never paste them into exercises or README; write original content informed by them.",
+    inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    execute: async (input: { query: string }) => {
+      try {
+        const results = await search(input.query);
+        return { ok: true, query: input.query, results };
+      } catch (err) {
+        return { ok: false, message: `web search failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    },
+  });
 
   const write_file = createTool({
     name: "write_file",
@@ -309,5 +327,5 @@ export function buildAuthorTools(ctx: TutorContext) {
     },
   });
 
-  return { run_tests, read_file, write_file, grep };
+  return { run_tests, read_file, write_file, grep, web_search };
 }
