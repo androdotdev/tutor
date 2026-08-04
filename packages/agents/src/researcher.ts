@@ -116,6 +116,7 @@ function createSubmitFindingsTool(): { tool: AgentTool; captured: () => unknown 
       captured = input;
       return { ok: true };
     },
+    lifecycle: { completesRun: true },
   });
   return { tool, captured: () => captured };
 }

@@ -1,14 +1,42 @@
 // Clarify-stage tests: a scripted mock SSE server (Bun.serve on port 0) drives
-// the clarify agent through an ask_user tool call and through a plain recap,
-// exercising the injected askUser seam and the recorded QA list.
+// the clarify agent through ask_user tool calls and recaps, exercising the
+// injected askUser seam, the recorded QA list, the empty-args fallback, and
+// the hard cap on ask_user invocations.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { runClarify } from "../src/clarify";
 import { FALLBACK_QUESTION } from "@tutor/core";
 import { resolveProvider, type ProviderSelection } from "@tutor/llms";
 
-// "ask": first request emits an ask_user tool call, second emits the recap.
-// "plain": every request emits text directly.
-let mode: "ask" | "plain" = "ask";
+type Step =
+  | { tool: "ask_user"; args: string }
+  | { text: string };
+
+// Scripted per-mode responses; the Nth model request gets script[N].
+const SCRIPTS: Record<string, Step[]> = {
+  ask: [
+    { tool: "ask_user", args: JSON.stringify({ question: "What level?" }) },
+    { text: "recap text" },
+  ],
+  empty: [
+    { tool: "ask_user", args: "{}" },
+    { text: "recap text" },
+  ],
+  empty2: [
+    { tool: "ask_user", args: "{}" },
+    { tool: "ask_user", args: "{}" },
+    { text: "recap text" },
+  ],
+  cap: [
+    { tool: "ask_user", args: JSON.stringify({ question: "Q1" }) },
+    { tool: "ask_user", args: JSON.stringify({ question: "Q2" }) },
+    { tool: "ask_user", args: JSON.stringify({ question: "Q3" }) },
+    { tool: "ask_user", args: JSON.stringify({ question: "Q4" }) },
+    { text: "recap text" },
+  ],
+  plain: [{ text: "no questions needed" }],
+};
+
+let mode = "ask";
 let callCount = 0;
 let server: ReturnType<typeof Bun.serve>;
 let provider: ProviderSelection;
@@ -22,10 +50,11 @@ beforeAll(() => {
       }
       const chunk = (o: unknown) => `data: ${JSON.stringify(o)}\n\n`;
       const call = callCount++;
+      const step = SCRIPTS[mode][call];
       const stream = new ReadableStream<Uint8Array>({
         start(c) {
           const enc = (s: string) => c.enqueue(new TextEncoder().encode(s));
-          if ((mode === "ask" || mode === "empty") && call === 0) {
+          if (step && "tool" in step) {
             enc(
               chunk({
                 choices: [
@@ -34,13 +63,9 @@ beforeAll(() => {
                       tool_calls: [
                         {
                           index: 0,
-                          id: "c1",
+                          id: `c${call}`,
                           type: "function",
-                          function: {
-                            name: "ask_user",
-                            arguments:
-                              mode === "empty" ? "{}" : JSON.stringify({ question: "What level?" }),
-                          },
+                          function: { name: "ask_user", arguments: step.args },
                         },
                       ],
                     },
@@ -49,11 +74,8 @@ beforeAll(() => {
               }),
             );
             enc(chunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }));
-          } else if (mode === "ask" || mode === "empty") {
-            enc(chunk({ choices: [{ delta: { content: "recap text" } }] }));
-            enc(chunk({ choices: [{ delta: {}, finish_reason: "stop" }] }));
           } else {
-            enc(chunk({ choices: [{ delta: { content: "no questions needed" } }] }));
+            enc(chunk({ choices: [{ delta: { content: step?.text ?? "" } }] }));
             enc(chunk({ choices: [{ delta: {}, finish_reason: "stop" }] }));
           }
           enc("data: [DONE]\n\n");
@@ -124,5 +146,44 @@ describe("runClarify", () => {
     expect(result.recap).toBe("recap text");
     expect(result.qa).toEqual([{ question: FALLBACK_QUESTION, answer: "beginner" }]);
     expect(asked).toEqual([FALLBACK_QUESTION]);
+  });
+
+  test("empty-args fallback counts answers so repeated prompts are never identical", async () => {
+    mode = "empty2";
+    callCount = 0;
+    const asked: string[] = [];
+    const askUser = async (q: string): Promise<string> => {
+      asked.push(q);
+      return "beginner";
+    };
+
+    const result = await runClarify({ provider, prompt: "learn Go", askUser });
+
+    expect(result.recap).toBe("recap text");
+    expect(result.qa).toEqual([
+      { question: FALLBACK_QUESTION, answer: "beginner" },
+      { question: "I've recorded 1 answer. What else should I know?", answer: "beginner" },
+    ]);
+    expect(asked).toEqual([FALLBACK_QUESTION, "I've recorded 1 answer. What else should I know?"]);
+  });
+
+  test("refuses a 4th ask_user call and forces the model to recap", async () => {
+    mode = "cap";
+    callCount = 0;
+    const asked: string[] = [];
+    const askUser = async (q: string): Promise<string> => {
+      asked.push(q);
+      return `answer to ${q}`;
+    };
+
+    const result = await runClarify({ provider, prompt: "learn Go", askUser });
+
+    expect(result.recap).toBe("recap text");
+    expect(asked).toEqual(["Q1", "Q2", "Q3"]);
+    expect(result.qa).toEqual([
+      { question: "Q1", answer: "answer to Q1" },
+      { question: "Q2", answer: "answer to Q2" },
+      { question: "Q3", answer: "answer to Q3" },
+    ]);
   });
 });

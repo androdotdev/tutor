@@ -84,26 +84,21 @@ beforeAll(() => {
             }
           } else if (mode === "bad") {
             // submit_findings called but always missing source_url; fires on
-            // both attempts (each attempt makes 2 calls, so even calls).
-            if (call % 2 === 0) {
-              enc(
-                chunk({
-                  choices: [
-                    {
-                      delta: {
-                        tool_calls: tool("submit_findings", {
-                          findings: [{ claim: "no source attached" }],
-                        }),
-                      },
+            // both attempts (completesRun ends each run at the call).
+            enc(
+              chunk({
+                choices: [
+                  {
+                    delta: {
+                      tool_calls: tool("submit_findings", {
+                        findings: [{ claim: "no source attached" }],
+                      }),
                     },
-                  ],
-                }),
-              );
-              enc(chunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }));
-            } else {
-              enc(chunk({ choices: [{ delta: { content: "nothing here" } }] }));
-              enc(chunk({ choices: [{ delta: {}, finish_reason: "stop" }] }));
-            }
+                  },
+                ],
+              }),
+            );
+            enc(chunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }));
           } else {
             enc(chunk({ choices: [{ delta: { content: "nothing here" } }] }));
             enc(chunk({ choices: [{ delta: {}, finish_reason: "stop" }] }));
