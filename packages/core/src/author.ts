@@ -21,7 +21,7 @@ export interface ScaffoldResult {
   modules: ScaffoldedModule[];
 }
 
-const slugify = (s: string) =>
+export const slugify = (s: string) =>
   s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 
 const pad2 = (n: number) => String(n).padStart(2, "0");

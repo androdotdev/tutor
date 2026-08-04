@@ -37,27 +37,43 @@ While the coach is working, the streaming answer renders incrementally; the
 transcript follows the tail automatically (re-engage scroll keys to browse
 history, then press Enter to snap back).
 
-### `lyceum new <dir>`
+### `lyceum new "<prompt>" [dir]`
 
-Scaffold a course: `modules/` skeleton, `package.json` with the test script,
-`PROGRESS.md`, and an initial module.
+Generate a course from a description. Four stages run in sequence:
+
+1. **Clarify** — asks up to 3 questions (level, scope, format) before planning;
+   `--yes` skips them.
+2. **Research** — the agent searches the web (`web_search`, no API key) and
+   submits a sourced findings report. This stage is required; `--no-research`
+   opts out for cheap or offline runs.
+3. **Plan** — the planner submits a course outline (2–8 modules, difficulty
+   ramping intro → core → capstone), written to `.lyceum/plan.json` as a
+   checkpoint.
+4. **Build** — every module is authored in outline order (skeleton created
+   first: `exercise/`, `tests/`, `solutions/`), continuing past a failing
+   module; each module's status is recorded in the checkpoint.
 
 ```
-lyceum new my-course --name "Express Basics" --topic routing --modules 5
+lyceum new "Express routing for beginners" ./express-course --modules 4
 ```
 
-Options: `--name <name>`, `--topic <topic>` (alias `--title`), `--modules <n>`
-(default 3).
+Options:
 
-### `lyceum add [title]`
+| Option | Meaning |
+| --- | --- |
+| `[dir]` | Course directory (default: current directory) |
+| `--modules <n>` | Override the planned module count (2–8) |
+| `--yes` | Skip clarifying questions |
+| `--no-research` | Skip the web research stage |
+| `--stub` | Scaffold an empty course (no LLM) |
 
-Append an empty module to the current course (title defaults to
-"Next module"). Use `--topic <topic>` to set the module topic.
+**Resume** — re-running the same command rebuilds only modules still
+pending/failed; a fully drafted plan is a no-op. A different prompt in a
+directory that already has `modules/` appends one module with that title
+(today's `add`/`draft` behavior, folded into `new`).
 
-### `lyceum draft [title]`
-
-Author a module with the AI agent. If the title matches an existing module,
-continue (and finish) that module instead of drafting a new one.
+A non-zero exit reports how many modules failed; `--stub` with a single
+positional treats it as the course directory (today's `lyceum new <dir>`).
 
 ### `lyceum list`
 

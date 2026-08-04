@@ -28,8 +28,9 @@ Built as a small monorepo of packages on top of the `@cline/*` SDK agent loop.
   coaching instructions, and on-demand skills (see Configuration).
 - **Provider-agnostic** — OpenAI-compatible endpoints, OpenRouter, Ollama; env
   vars or config file.
-- **Course authoring** — scaffold courses, append modules, and draft modules
-  with the AI agent.
+- **Course generation** — `lyceum new "<prompt>"` runs a full pipeline:
+  clarifying questions, web research, a curriculum plan, then per-module
+  authoring with an AI agent (checkpointed, resumable).
 
 ## Quick start
 
@@ -57,19 +58,21 @@ course/
 │       ├── project/      # optional capstone (solution.js is gated)
 │       └── solutions/    # NEVER shown to the coach
 ├── session/              # per-module conversation history (gitignore this)
+├── .lyceum/plan.json     # course-generation checkpoint (gitignore this)
 └── PROGRESS.md           # Learn-in-Public progress notes (optional)
 ```
 
-Scaffold a new course with `lyceum new <dir>`.
+Scaffold an empty course with `lyceum new <dir> --stub`. Generate a full
+course from a description with `lyceum new "<prompt>" [dir]` — it clarifies,
+researches, plans, and authors every module (see the CLI reference).
 
 ## CLI
 
 | Command | Description |
 | --- | --- |
 | `lyceum` / `lyceum run [module]` | Open the Socratic TUI (optionally straight into a module) |
-| `lyceum new <dir>` | Scaffold a course |
-| `lyceum add [title]` | Append a module to the course |
-| `lyceum draft [title]` | Author a module with the AI agent |
+| `lyceum new "<prompt>" [dir]` | Generate a course: clarify → research → plan → author every module |
+| `lyceum new <dir> --stub` | Scaffold an empty course (no LLM) |
 | `lyceum list` | List the course modules |
 | `lyceum test [module]` | Run a module's tests headlessly |
 | `lyceum provider` | Show the resolved LLM provider |
