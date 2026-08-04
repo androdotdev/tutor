@@ -1,11 +1,23 @@
 #!/usr/bin/env bun
 import { Command, CommanderError } from "commander";
 import { spawn } from "node:child_process";
-import { basename } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, join } from "node:path";
 import { resolveCourse, findModule, type ModuleDesc } from "@tutor/shared";
-import { resolveProvider } from "@tutor/llms";
-import { createAuthorSession } from "@tutor/agents";
-import { scaffoldCourse, addModule } from "@tutor/core";
+import { resolveProvider, type ProviderSelection } from "@tutor/llms";
+import {
+  buildCourse,
+  createAuthorSession,
+  loadCoursePlan,
+  newCoursePlan,
+  planCourse,
+  runClarify,
+  runResearch,
+  saveCoursePlan,
+  type BuildCourseResult,
+  type ResearchReport,
+} from "@tutor/agents";
+import { addModule, buildAuthorTools, scaffoldCourse } from "@tutor/core";
 import { findCourseRoot } from "./root";
 import { loadUserConfig } from "./config";
 
@@ -48,7 +60,7 @@ async function launchTui(moduleArg?: string): Promise<void> {
     initial = m;
   }
   // Dynamic import keeps pi-tui (and its native terminal addon) out of the
-  // headless commands (list/test/new/add/provider) and out of the tsup entry
+  // headless commands (list/test/new/provider) and out of the tsup entry
   // graph; static import would pull the terminal stack into every invocation.
   const { runTui } = await import("./tui/main");
   await runTui(courseRoot, initial, userConfig);
@@ -71,77 +83,134 @@ program.action(() => {
   return launchTui();
 });
 
-program
-  .command("new")
-  .description("scaffold a course")
-  .argument("<dir>", "course directory")
-  .option("--name <name>", "course display name (default: derived from dir)")
-  .option("--topic <topic>", "course topic")
-  .option("--title <title>", "alias for --topic")
-  .option("--modules <n>", "number of modules", "3")
-  .action(async (dir: string, opts: { name?: string; topic?: string; title?: string; modules: string }) => {
-    const name =
-      opts.name ??
-      basename(dir).replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    const parsed = Number(opts.modules);
-    const created = await scaffoldCourse(
-      { name, topic: opts.topic ?? opts.title, moduleCount: Number.isFinite(parsed) ? parsed : 3 },
-      dir,
-    );
-    console.log(`course "${name}" scaffolded at ${dir}`);
-    for (const m of created.modules) console.log(`  ${m.id}  ${m.title}`);
-    console.log(`Open it:  LYCEUM_COURSE=${dir} lyceum`);
-  });
-
-program
-  .command("add")
-  .description("append a module to the course")
-  .argument("[title]", "module title", "Next module")
-  .option("--topic <topic>", "module topic")
-  .action(async (title: string, opts: { topic?: string }) => {
-    const { courseRoot } = await loadCourse();
-    const mod = await addModule(courseRoot, { title, topic: opts.topic });
-    console.log(`added module ${mod.id} ${mod.dir}`);
-  });
-
-program
-  .command("draft")
-  .description("author a module with the AI agent")
-  .argument("[title]", "module title, or an existing module to finish", "Untitled module")
-  .action(async (title: string) => {
-    const { courseRoot, modules: initial } = await loadCourse();
-    let modules = initial;
-    let module = (await findModule(modules, title)) ?? null;
-    if (!module) {
-      const mod = await addModule(courseRoot, { title });
-      modules = await resolveCourse(courseRoot);
-      module = (await findModule(modules, mod.dir)) ?? null;
-    }
-    if (!module) throw new CliError(`could not resolve module "${title}"`);
-    const provider = resolveProvider(userConfig.provider);
-    if (!provider) throw new CliError("draft needs an LLM — set OPENAI_API_KEY or OLLAMA_HOST");
-
-    const session = createAuthorSession({ courseRoot, modules, module, provider });
-    const written: string[] = [];
-    session.subscribe((e) => {
-      if (e.type === "tool-finished" && e.toolCall.toolName === "write_file") {
-        for (const part of e.message.content) {
-          if (part.type === "tool-result") {
-            const out = part.output;
-            if (typeof out === "string") written.push(out);
-            else if (typeof out === "object" && out !== null && "path" in out) written.push(String(out.path));
-          }
+/** Append mode: author ONE module by title (find-or-create). Old add/draft logic. */
+async function authorSingleModule(courseRoot: string, title: string, provider: ProviderSelection): Promise<void> {
+  let modules = await resolveCourse(courseRoot);
+  let module = (await findModule(modules, title)) ?? null;
+  if (!module) {
+    const mod = await addModule(courseRoot, { title });
+    modules = await resolveCourse(courseRoot);
+    module = (await findModule(modules, mod.dir)) ?? null;
+  }
+  if (!module) throw new CliError(`could not resolve module "${title}"`);
+  const session = createAuthorSession({ courseRoot, modules, module, provider });
+  const written: string[] = [];
+  session.subscribe((e) => {
+    if (e.type === "tool-finished" && e.toolCall.toolName === "write_file") {
+      for (const part of e.message.content) {
+        if (part.type === "tool-result") {
+          const out = part.output;
+          if (typeof out === "string") written.push(out);
+          else if (typeof out === "object" && out !== null && "path" in out) written.push(String(out.path));
         }
       }
-    });
-
-    const task = `Author the module now. Title: "${module.title}". Module dir: ${module.dir}.
-Follow the order in the policy: tests first, then exercise stub, then README, then run_tests to verify the grader loads. Finish with a summary of what the learner must implement.`;
-    const result = await session.run(task);
-    console.log("— authoring summary —");
-    console.log(result);
-    if (written.length) console.log(`Files written: ${written.length}`);
+    }
   });
+  const task = `Author the module now. Title: "${module.title}". Module dir: ${module.dir}.
+Follow the order in the policy: tests first, then exercise stub, then README, then run_tests to verify the grader loads. Finish with a summary of what the learner must implement.`;
+  const result = await session.run(task);
+  console.log("— authoring summary —");
+  console.log(result);
+  if (written.length) console.log(`Files written: ${written.length}`);
+}
+
+function printBuildSummary(result: BuildCourseResult, total: number): void {
+  console.log(`${result.drafted}/${total} modules drafted`);
+  for (const f of result.failed) console.log(`  failed: ${f.title} — ${f.error}`);
+}
+
+program
+  .command("new")
+  .description("generate a course from a prompt: clarify → research → plan → author every module")
+  .argument("[prompt]", 'course description, e.g. "Express routing for beginners" (a module title in append mode)')
+  .argument("[dir]", "course directory (default: current directory)")
+  .option("--name <name>", "course display name (stub mode)")
+  .option("--topic <topic>", "course topic (stub mode)")
+  .option("--modules <n>", "override the module count (2-8)")
+  .option("--yes", "skip clarifying questions")
+  .option("--stub", "scaffold empty modules only (no LLM)")
+  .option("--no-research", "skip the web research stage")
+  .action(
+    async (
+      prompt: string | undefined,
+      dir: string | undefined,
+      opts: { name?: string; topic?: string; modules?: string; yes?: boolean; stub?: boolean; research?: boolean },
+    ) => {
+      const targetDir = dir ?? process.cwd();
+      const moduleCount = opts.modules ? Number(opts.modules) : undefined;
+
+      // --stub: deterministic scaffold, no LLM. A single positional is the dir
+      // (today's `new <dir>` usage — kept working via this flag).
+      if (opts.stub) {
+        const stubDir = dir ?? prompt ?? process.cwd();
+        const name =
+          opts.name ?? basename(stubDir).replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+        const created = await scaffoldCourse(
+          { name, topic: opts.topic, moduleCount: Number.isFinite(moduleCount ?? NaN) ? moduleCount : 3 },
+          stubDir,
+        );
+        console.log(`course "${name}" scaffolded at ${stubDir}`);
+        for (const m of created.modules) console.log(`  ${m.id}  ${m.title}`);
+        console.log(`Open it:  LYCEUM_COURSE=${stubDir} lyceum`);
+        return;
+      }
+
+      if (!prompt) {
+        throw new CliError('new needs a course description — e.g. lyceum new "Express routing for beginners"');
+      }
+      const provider = resolveProvider(userConfig.provider);
+      if (!provider) throw new CliError("new needs an LLM — set OPENAI_API_KEY or OLLAMA_HOST");
+
+      // Resume: an existing checkpoint whose prompt matches re-runs the build
+      // for modules still pending/failed (all-drafted = a no-op).
+      const existingPlan = loadCoursePlan(targetDir);
+      if (existingPlan && existingPlan.prompt === prompt) {
+        const left = existingPlan.modules.filter((m) => m.status !== "drafted").length;
+        console.log(`resuming ${targetDir} (${left} module(s) left)`);
+        const result = await buildCourse({ provider, courseRoot: targetDir, outline: existingPlan.outline, prompt });
+        printBuildSummary(result, existingPlan.outline.modules.length);
+        if (result.failed.length) throw new CliError(`${result.failed.length} module(s) failed — re-run lyceum new to resume`);
+        return;
+      }
+
+      // Append mode: an existing modules/ dir + a title = author ONE module
+      // (old `add`/`draft` semantics folded into `new`).
+      if (existsSync(join(targetDir, "modules"))) {
+        await authorSingleModule(targetDir, prompt, provider);
+        return;
+      }
+
+      // 1. Clarify (--yes skips; the recap feeds the planner).
+      let context = prompt;
+      if (!opts.yes) {
+        console.log("clarifying…");
+        const { recap } = await runClarify({ provider, prompt });
+        context = `${prompt}\n\nClarified: ${recap}`;
+      }
+
+      // 2. Research: always runs (web_search is a required stage); --no-research
+      // opts out for cheap/offline runs.
+      let research: ResearchReport | null = null;
+      if (opts.research !== false) {
+        console.log("researching…");
+        const { web_search } = buildAuthorTools({ courseRoot: targetDir, modules: [] });
+        research = await runResearch({ provider, prompt: context, webSearchTool: web_search });
+      }
+
+      // 3. Plan.
+      console.log("planning…");
+      const outline = await planCourse({ provider, prompt: context, research, moduleCountOverride: moduleCount });
+      saveCoursePlan(newCoursePlan(targetDir, prompt, outline));
+      console.log(`planned ${outline.modules.length} modules: ${outline.modules.map((m) => m.title).join(", ")}`);
+
+      // 4. Author every module (continue-on-error; resume via the checkpoint).
+      console.log("authoring…");
+      const result = await buildCourse({ provider, courseRoot: targetDir, outline, prompt });
+      printBuildSummary(result, outline.modules.length);
+      if (result.failed.length) throw new CliError(`${result.failed.length} module(s) failed — re-run lyceum new to resume`);
+      console.log(`Open it:  LYCEUM_COURSE=${targetDir} lyceum`);
+    },
+  );
 
 program
   .command("run")

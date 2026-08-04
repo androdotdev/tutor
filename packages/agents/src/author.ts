@@ -5,8 +5,8 @@ import { buildModel, type ProviderSelection } from "@tutor/llms";
 import { buildAuthorTools } from "@tutor/core";
 
 /** Author-mode policy: how the agent writes a module the way an engineer would. */
-export function buildAuthorPrompt(module: ModuleDesc): string {
-  return [
+export function buildAuthorPrompt(module: ModuleDesc, opts?: { hasPolish?: boolean }): string {
+  const lines = [
     `You are the course author for the module "${module.title}" (${module.dir}).`,
     `Your job: write a complete, self-learning module using the tools available, in this order:`,
     ``,
@@ -29,7 +29,11 @@ export function buildAuthorPrompt(module: ModuleDesc): string {
     `7. Close with a short summary: the graded function names and what the learner must implement.`,
     ``,
     `Absolute paths are safe; keep every write inside this module.`,
-  ].join("\n");
+  ];
+  if (opts?.hasPolish) {
+    lines.push("You may call polish to rewrite a draft passage for tone/clarity (it never touches files).");
+  }
+  return lines.join("\n");
 }
 
 export interface AuthorSessionOptions {
@@ -38,6 +42,9 @@ export interface AuthorSessionOptions {
   module: ModuleDesc;
   provider: ProviderSelection;
   maxIterations?: number;
+  /** Extra tools appended to the author runtime's toolset (e.g. polish). */
+  /** extra tools appended to the author session (e.g. polish); never write-only bypasses */
+  extraTools?: NonNullable<AgentRuntimeConfig["tools"]>;
 }
 
 export interface AuthorSession {
@@ -50,8 +57,14 @@ export function createAuthorSession(opts: AuthorSessionOptions): AuthorSession {
   const baseTools = buildAuthorTools({ courseRoot: opts.courseRoot, modules: opts.modules });
   const runtime = createAgentRuntime({
     model: buildModel(opts.provider),
-    systemPrompt: buildAuthorPrompt(opts.module),
-    tools: [baseTools.run_tests, baseTools.read_file, baseTools.write_file, baseTools.web_search],
+    systemPrompt: buildAuthorPrompt(opts.module, { hasPolish: !!opts.extraTools?.length }),
+    tools: [
+      baseTools.run_tests,
+      baseTools.read_file,
+      baseTools.write_file,
+      baseTools.web_search,
+      ...(opts.extraTools ?? []),
+    ],
     maxIterations: opts.maxIterations ?? 16,
   } satisfies AgentRuntimeConfig);
 
