@@ -267,9 +267,17 @@ export function buildAuthorTools(ctx: TutorContext, deps: { search?: SearchFn } 
       "Search the web (no API key) for up to 5 results: title, URL, snippet each. Use it to research module topics — official docs, best practices, examples. Results are EXTERNAL pages: never paste them into exercises or README; write original content informed by them.",
     inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
     execute: async (input: { query: string }) => {
+      const query = typeof input?.query === "string" ? input.query.trim() : "";
+      if (query === "") {
+        // Some providers strip tool-call arguments entirely, so a model that
+        // believes it searched arrives with {}. Searching an empty/undefined
+        // query silently feeds garbage ("undefined" pages) back to the model —
+        // reject loudly so it retries with a query or proceeds without one.
+        throw new Error("web_search called without a query — retry with the query argument.");
+      }
       try {
-        const results = await search(input.query);
-        return { ok: true, query: input.query, results };
+        const results = await search(query);
+        return { ok: true, query, results };
       } catch (err) {
         return { ok: false, message: `web search failed: ${err instanceof Error ? err.message : String(err)}` };
       }

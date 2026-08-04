@@ -175,8 +175,15 @@ export async function runResearch(opts: ResearchOptions): Promise<ResearchReport
   const retry = await attempt(opts, `${opts.prompt}${note}`);
   if (retry.report) return retry.report;
 
+  const emptyArgs =
+    retry.called &&
+    typeof retry.payload === "object" &&
+    retry.payload !== null &&
+    Object.keys(retry.payload as object).length === 0;
   const why = retry.called
     ? `submit_findings payload still invalid: ${(reportErrors(retry.payload) ?? []).join("; ")} (payload: ${sketch(retry.payload)})`
     : `the model finished without calling submit_findings; last output: ${JSON.stringify(retry.outputText.slice(0, 200))}`;
-  throw new Error(`Research stage failed: ${why}`);
+  throw new Error(
+    `Research stage failed: ${why}${emptyArgs ? " — submit_findings arrived with empty arguments; your provider may be stripping tool-call arguments" : ""}`,
+  );
 }
