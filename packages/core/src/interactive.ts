@@ -1,3 +1,4 @@
+import { input } from "@inquirer/prompts";
 import { createTool } from "@cline/shared";
 import { createInterface } from "node:readline/promises";
 
@@ -19,10 +20,34 @@ export const FALLBACK_QUESTION = "What else should I know about the course you w
 /** Hard ceiling on ask_user invocations; matches the prompt's "0-3 total". */
 export const MAX_ASK_USER_CALLS = 3;
 
-/** Reads answers from the terminal via node:readline/promises. */
+/**
+ * The fallback question text when the model sends `{}` with no topic
+ * context; with a topic it names the course so the prompt is actually
+ * useful. Never identical across calls: later ones count recorded answers.
+ */
+function fallbackQuestion(topic: string | undefined, answered: number): string {
+  if (answered > 0) {
+    return `I've recorded ${answered} answer${answered === 1 ? "" : "s"}. What else should I know?`;
+  }
+  if (topic && topic.trim() !== "") {
+    const t = topic.trim();
+    return `What else should I know about your "${t.length > 48 ? `${t.slice(0, 48)}…` : t}" course?`;
+  }
+  return FALLBACK_QUESTION;
+}
+
+/**
+ * Reads answers from the terminal. On a TTY this is a proper interactive
+ * prompt via @inquirer/prompts (visible "type your answer" input); on a
+ * non-TTY stdin (piped input, tests) it falls back to plain readline so
+ * nothing blocks or throws.
+ */
 export function defaultPromptLine(): AskUserFn {
   return async (question: string): Promise<string> => {
     const q = typeof question === "string" && question.trim() !== "" ? question : FALLBACK_QUESTION;
+    if (process.stdin.isTTY) {
+      return await input({ message: q });
+    }
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     try {
       return await rl.question(q);
@@ -39,10 +64,10 @@ export function defaultPromptLine(): AskUserFn {
  *
  * Bounds: at most `MAX_ASK_USER_CALLS` invocations (the 4th+ throws, which
  * the runtime feeds back to the model as a tool error, forcing a recap).
- * Missing/empty `question` args fall back to a contextual prompt so a model
+ * Missing/empty `question` args fall back to a topic-aware prompt so a model
  * that sends `{}` can never hang the terminal on a blank line.
  */
-export function createAskUserTool(promptLine: AskUserFn) {
+export function createAskUserTool(promptLine: AskUserFn, topic?: string) {
   const qa: AskUserQA[] = [];
   let calls = 0;
   const tool = createTool({
@@ -65,9 +90,7 @@ export function createAskUserTool(promptLine: AskUserFn) {
       const question =
         typeof asked === "string" && asked.trim() !== ""
           ? asked
-          : qa.length === 0
-            ? FALLBACK_QUESTION
-            : `I've recorded ${qa.length} answer${qa.length === 1 ? "" : "s"}. What else should I know?`;
+          : fallbackQuestion(topic, qa.length);
       const answer = await promptLine(question);
       qa.push({ question, answer });
       return { ok: true, answer };

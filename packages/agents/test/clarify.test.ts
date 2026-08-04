@@ -4,7 +4,6 @@
 // the hard cap on ask_user invocations.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { runClarify } from "../src/clarify";
-import { FALLBACK_QUESTION } from "@tutor/core";
 import { resolveProvider, type ProviderSelection } from "@tutor/llms";
 
 type Step =
@@ -144,8 +143,8 @@ describe("runClarify", () => {
     const result = await runClarify({ provider, prompt: "learn Go", askUser });
 
     expect(result.recap).toBe("recap text");
-    expect(result.qa).toEqual([{ question: FALLBACK_QUESTION, answer: "beginner" }]);
-    expect(asked).toEqual([FALLBACK_QUESTION]);
+    expect(result.qa).toEqual([{ question: 'What else should I know about your "learn Go" course?', answer: "beginner" }]);
+    expect(asked).toEqual(['What else should I know about your "learn Go" course?']);
   });
 
   test("empty-args fallback counts answers so repeated prompts are never identical", async () => {
@@ -161,10 +160,13 @@ describe("runClarify", () => {
 
     expect(result.recap).toBe("recap text");
     expect(result.qa).toEqual([
-      { question: FALLBACK_QUESTION, answer: "beginner" },
+      { question: 'What else should I know about your "learn Go" course?', answer: "beginner" },
       { question: "I've recorded 1 answer. What else should I know?", answer: "beginner" },
     ]);
-    expect(asked).toEqual([FALLBACK_QUESTION, "I've recorded 1 answer. What else should I know?"]);
+    expect(asked).toEqual([
+      'What else should I know about your "learn Go" course?',
+      "I've recorded 1 answer. What else should I know?",
+    ]);
   });
 
   test("refuses a 4th ask_user call and forces the model to recap", async () => {
