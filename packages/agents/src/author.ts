@@ -22,6 +22,9 @@ export function buildAuthorPrompt(module: ModuleDesc): string {
     `5. Run the grader (run_tests). Expected: the tests FAIL because the stub is empty — that is`,
     `   GOOD. But fix any import/syntax error the output reveals; the grader must execute to the`,
     `   failure assertions, not crash on load.`,
+    ``,
+    `Research freely with web_search (official docs, best practices) to get the topic right —`,
+    `but write ORIGINAL exercises and explanations. Never paste search results or external code.`,
     `6. NEVER write to solutions/ (it is redacted). Do not paste worked answers into README.`,
     `7. Close with a short summary: the graded function names and what the learner must implement.`,
     ``,
@@ -48,7 +51,7 @@ export function createAuthorSession(opts: AuthorSessionOptions): AuthorSession {
   const runtime = createAgentRuntime({
     model: buildModel(opts.provider),
     systemPrompt: buildAuthorPrompt(opts.module),
-    tools: [baseTools.run_tests, baseTools.read_file, baseTools.write_file],
+    tools: [baseTools.run_tests, baseTools.read_file, baseTools.write_file, baseTools.web_search],
     maxIterations: opts.maxIterations ?? 16,
   } satisfies AgentRuntimeConfig);
 
