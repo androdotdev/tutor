@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@cline/shared": "0.0.69",
+    "@inquirer/prompts": "8.5.2",
     "@tutor/shared": "*"
   }
 }

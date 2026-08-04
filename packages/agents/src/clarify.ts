@@ -33,7 +33,7 @@ function buildClarifyPrompt(topic: string): string {
 
 /** Runs the clarify stage: ask the human a few questions, then get a recap. */
 export async function runClarify(opts: ClarifyOptions): Promise<ClarifyResult> {
-  const { tool, getQA } = createAskUserTool(opts.askUser ?? defaultPromptLine());
+  const { tool, getQA } = createAskUserTool(opts.askUser ?? defaultPromptLine(), opts.prompt);
   const runtime = createAgentRuntime({
     model: buildModel(opts.provider),
     systemPrompt: buildClarifyPrompt(opts.prompt),
