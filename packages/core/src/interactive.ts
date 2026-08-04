@@ -10,12 +10,19 @@ export interface AskUserQA {
   answer: string;
 }
 
+/**
+ * Shown when a model calls ask_user without a question (some models send
+ * `{}`). Never block on stdin with a blank prompt.
+ */
+export const FALLBACK_QUESTION = "What else should I know about the course you want?";
+
 /** Reads answers from the terminal via node:readline/promises. */
 export function defaultPromptLine(): AskUserFn {
   return async (question: string): Promise<string> => {
+    const q = typeof question === "string" && question.trim() !== "" ? question : FALLBACK_QUESTION;
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     try {
-      return await rl.question(question);
+      return await rl.question(q);
     } finally {
       rl.close();
     }
@@ -39,7 +46,8 @@ export function createAskUserTool(promptLine: AskUserFn) {
       required: ["question"],
     },
     execute: async (input: { question?: string }) => {
-      const question = input.question ?? "";
+      const question =
+        typeof input?.question === "string" && input.question.trim() !== "" ? input.question : FALLBACK_QUESTION;
       const answer = await promptLine(question);
       qa.push({ question, answer });
       return { ok: true, answer };

@@ -3,6 +3,7 @@
 // exercising the injected askUser seam and the recorded QA list.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { runClarify } from "../src/clarify";
+import { FALLBACK_QUESTION } from "@tutor/core";
 import { resolveProvider, type ProviderSelection } from "@tutor/llms";
 
 // "ask": first request emits an ask_user tool call, second emits the recap.
@@ -24,7 +25,7 @@ beforeAll(() => {
       const stream = new ReadableStream<Uint8Array>({
         start(c) {
           const enc = (s: string) => c.enqueue(new TextEncoder().encode(s));
-          if (mode === "ask" && call === 0) {
+          if ((mode === "ask" || mode === "empty") && call === 0) {
             enc(
               chunk({
                 choices: [
@@ -37,7 +38,8 @@ beforeAll(() => {
                           type: "function",
                           function: {
                             name: "ask_user",
-                            arguments: JSON.stringify({ question: "What level?" }),
+                            arguments:
+                              mode === "empty" ? "{}" : JSON.stringify({ question: "What level?" }),
                           },
                         },
                       ],
@@ -47,7 +49,7 @@ beforeAll(() => {
               }),
             );
             enc(chunk({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }));
-          } else if (mode === "ask") {
+          } else if (mode === "ask" || mode === "empty") {
             enc(chunk({ choices: [{ delta: { content: "recap text" } }] }));
             enc(chunk({ choices: [{ delta: {}, finish_reason: "stop" }] }));
           } else {
@@ -106,5 +108,21 @@ describe("runClarify", () => {
 
     expect(result.recap).toBe("no questions needed");
     expect(result.qa).toEqual([]);
+  });
+
+  test("asks with the fallback question when the model calls ask_user empty", async () => {
+    mode = "empty";
+    callCount = 0;
+    const asked: string[] = [];
+    const askUser = async (q: string): Promise<string> => {
+      asked.push(q);
+      return "beginner";
+    };
+
+    const result = await runClarify({ provider, prompt: "learn Go", askUser });
+
+    expect(result.recap).toBe("recap text");
+    expect(result.qa).toEqual([{ question: FALLBACK_QUESTION, answer: "beginner" }]);
+    expect(asked).toEqual([FALLBACK_QUESTION]);
   });
 });
