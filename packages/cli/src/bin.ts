@@ -122,8 +122,8 @@ function printBuildSummary(result: BuildCourseResult, total: number): void {
 program
   .command("new")
   .description("generate a course from a prompt: clarify → research → plan → author every module")
-  .argument("[prompt]", 'course description, e.g. "Express routing for beginners" (a module title in append mode)')
-  .argument("[dir]", "course directory (default: current directory)")
+  .argument("[prompt...]", "course description, e.g. Express routing for beginners (a module title in append mode)")
+  .option("--dir <path>", "course directory (default: current directory)")
   .option("--name <name>", "course display name (stub mode)")
   .option("--topic <topic>", "course topic (stub mode)")
   .option("--modules <n>", "override the module count (2-8)")
@@ -132,31 +132,33 @@ program
   .option("--no-research", "skip the web research stage")
   .action(
     async (
-      prompt: string | undefined,
-      dir: string | undefined,
-      opts: { name?: string; topic?: string; modules?: string; yes?: boolean; stub?: boolean; research?: boolean },
+      promptArgs: string[] | undefined,
+      opts: { dir?: string; name?: string; topic?: string; modules?: string; yes?: boolean; stub?: boolean; research?: boolean },
     ) => {
-      const targetDir = dir ?? process.cwd();
+      // Variadic positionals are joined into ONE prompt: `lyceum new make a
+      // docker course` must not become prompt="make", dir="a" with the rest
+      // swallowed (the old two-positional form did exactly that).
+      const prompt = (promptArgs ?? []).join(" ");
+      const targetDir = opts.dir ?? process.cwd();
       const moduleCount = opts.modules ? Number(opts.modules) : undefined;
 
-      // --stub: deterministic scaffold, no LLM. A single positional is the dir
-      // (today's `new <dir>` usage — kept working via this flag).
+      // --stub: deterministic scaffold, no LLM. Course directory is --dir (or
+      // cwd); a positional is the prompt and is ignored here.
       if (opts.stub) {
-        const stubDir = dir ?? prompt ?? process.cwd();
         const name =
-          opts.name ?? basename(stubDir).replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+          opts.name ?? basename(targetDir).replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
         const created = await scaffoldCourse(
           { name, topic: opts.topic, moduleCount: Number.isFinite(moduleCount ?? NaN) ? moduleCount : 3 },
-          stubDir,
+          targetDir,
         );
-        console.log(`course "${name}" scaffolded at ${stubDir}`);
+        console.log(`course "${name}" scaffolded at ${targetDir}`);
         for (const m of created.modules) console.log(`  ${m.id}  ${m.title}`);
-        console.log(`Open it:  LYCEUM_COURSE=${stubDir} lyceum`);
+        console.log(`Open it:  LYCEUM_COURSE=${targetDir} lyceum`);
         return;
       }
 
       if (!prompt) {
-        throw new CliError('new needs a course description — e.g. lyceum new "Express routing for beginners"');
+        throw new CliError("new needs a course description — e.g. lyceum new Express routing for beginners");
       }
       const provider = resolveProvider(userConfig.provider);
       if (!provider) throw new CliError("new needs an LLM — set OPENAI_API_KEY or OLLAMA_HOST");

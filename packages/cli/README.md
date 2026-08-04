@@ -37,9 +37,11 @@ While the coach is working, the streaming answer renders incrementally; the
 transcript follows the tail automatically (re-engage scroll keys to browse
 history, then press Enter to snap back).
 
-### `lyceum new "<prompt>" [dir]`
+### `lyceum new <prompt> [--dir <path>]`
 
-Generate a course from a description. Four stages run in sequence:
+Generate a course from a description. Positional arguments are joined into a
+single prompt, so quoting is never required: `lyceum new make a docker course`
+works. Four stages run in sequence:
 
 1. **Clarify** — asks up to 3 questions (level, scope, format) before planning;
    `--yes` skips them.
@@ -57,26 +59,26 @@ Every stage streams its reasoning and tool calls live, so a run never looks
 hung; a failed research or plan stage reports exactly what the model got wrong.
 
 ```
-lyceum new "Express routing for beginners" ./express-course --modules 4
+lyceum new Express routing for beginners --dir ./express-course --modules 4
 ```
 
 Options:
 
 | Option | Meaning |
 | --- | --- |
-| `[dir]` | Course directory (default: current directory) |
+| `--dir <path>` | Course directory (default: current directory) |
 | `--modules <n>` | Override the planned module count (2–8) |
 | `--yes` | Skip clarifying questions |
 | `--no-research` | Skip the web research stage |
-| `--stub` | Scaffold an empty course (no LLM) |
+| `--stub` | Scaffold an empty course (no LLM) at `--dir` or cwd |
 
 **Resume** — re-running the same command rebuilds only modules still
 pending/failed; a fully drafted plan is a no-op. A different prompt in a
 directory that already has `modules/` appends one module with that title
 (today's `add`/`draft` behavior, folded into `new`).
 
-A non-zero exit reports how many modules failed; `--stub` with a single
-positional treats it as the course directory (today's `lyceum new <dir>`).
+A non-zero exit reports how many modules failed. In append mode the joined
+prompt is the new module's title (`lyceum new Query params`).
 
 ### `lyceum list`
 
