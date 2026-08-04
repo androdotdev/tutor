@@ -24,14 +24,19 @@ function clampedCount(count: number | undefined): number | null {
   return Math.max(2, Math.min(8, count));
 }
 
-function buildPlanSystemPrompt(opts: PlanOptions): string {
+/** Static role/rules for the planner; per-run data (topic, research) rides in the user turn. */
+function buildPlanSystemPrompt(clamped: number | null): string {
   const base =
-    "You are a curriculum designer. Design a self-learning course for the topic below. 2 to 8 modules, difficulty ramping intro → core → capstone. Each module: a 2-digit id, a title, 3-6 concrete concepts (short phrases an authoring agent will teach), and a difficulty. When research findings are provided, attach the relevant source urls to module.sources. Call submit_outline ONCE with the complete outline — it is the only way to deliver your answer.\n\nTopic: " +
-    opts.prompt;
-  const research = opts.research ? `\n\nResearch findings (cite these):\n${JSON.stringify(opts.research)}` : "";
-  const clamped = clampedCount(opts.moduleCountOverride);
+    "You are a curriculum designer. Design a self-learning course from the task you are given: 2 to 8 modules, difficulty ramping intro → core → capstone. Each module: a 2-digit id, a title, 3-6 concrete concepts (short phrases an authoring agent will teach), and a difficulty. Attach the relevant source urls to module.sources when research findings are provided. Call submit_outline ONCE with the complete outline — it is the only way to deliver your answer.";
   const cap = clamped !== null ? `\n\nThe course must have exactly ${clamped} modules.` : "";
-  return base + research + cap;
+  return base + cap;
+}
+
+/** The per-run task payload: topic (plus clarify recap) and research findings. */
+function buildPlanInput(prompt: string, research?: ResearchReport | null): string {
+  const base = `Topic: ${prompt}`;
+  const researchBlock = research ? `\n\nResearch findings (cite these):\n${JSON.stringify(research)}` : "";
+  return base + researchBlock;
 }
 
 /** Validation errors for a submit_outline payload; null when valid. */
@@ -173,10 +178,11 @@ function sketch(payload: unknown): string {
 
 /** Run the plan stage: at most one retry before giving up on the outline. */
 export async function planCourse(opts: PlanOptions): Promise<CourseOutline> {
-  const systemPrompt = buildPlanSystemPrompt(opts);
   const clamped = clampedCount(opts.moduleCountOverride);
+  const systemPrompt = buildPlanSystemPrompt(clamped);
+  const input = buildPlanInput(opts.prompt, opts.research);
 
-  const first = await runOutlineAttempt(opts.provider, systemPrompt, opts.prompt, clamped, opts.progress);
+  const first = await runOutlineAttempt(opts.provider, systemPrompt, input, clamped, opts.progress);
   if (first.outline) return first.outline;
 
   const errors = first.called ? outlineErrors(first.payload) : null;
@@ -184,7 +190,7 @@ export async function planCourse(opts: PlanOptions): Promise<CourseOutline> {
   const note = errors
     ? `\n\nYour previous submit_outline call was invalid:\n- ${errors.join("\n- ")}${clampNote}\nFix those fields and call submit_outline once with a valid outline.`
     : `\n\nYour previous reply did not call submit_outline. Call submit_outline once with a valid outline ({ name, topic, modules: [{ id, title, concepts, difficulty }] })${clampNote}`;
-  const second = await runOutlineAttempt(opts.provider, systemPrompt, `${opts.prompt}${note}`, clamped, opts.progress);
+  const second = await runOutlineAttempt(opts.provider, systemPrompt, `${input}${note}`, clamped, opts.progress);
   if (second.outline) return second.outline;
 
   const emptyArgs =

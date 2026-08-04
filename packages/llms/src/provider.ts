@@ -192,6 +192,9 @@ function parseChunk(chunk: SseChunk, events: AgentModelEvent[], firstIdByIndex: 
 export function buildModel(sel: ProviderSelection): AgentModel {
   return {
     async *stream(request) {
+      // One stream per run covers a whole stage's generation, so a long
+      // outline can legitimately take minutes; 60s was aborting mid-stream.
+      const timeoutMs = Math.max(1_000, Number(process.env.TUTOR_REQUEST_TIMEOUT_MS ?? 300_000) || 300_000);
       const headers: Record<string, string> = { "content-type": "application/json" };
       if (sel.apiKey) headers.authorization = `Bearer ${sel.apiKey}`;
 
@@ -217,8 +220,8 @@ export function buildModel(sel: ProviderSelection): AgentModel {
         headers,
         body: JSON.stringify(body),
         signal: request.signal
-          ? AbortSignal.any([request.signal, AbortSignal.timeout(60_000)])
-          : AbortSignal.timeout(60_000),
+          ? AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs),
       })) {
         parseChunk(chunk, events, firstIdByIndex);
         if (events.some((e) => e.type === "finish")) finished = true;

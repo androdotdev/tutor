@@ -37,15 +37,17 @@ function fallbackQuestion(topic: string | undefined, answered: number): string {
 }
 
 /**
- * Reads answers from the terminal. On a TTY this is a proper interactive
- * prompt via @inquirer/prompts (visible "type your answer" input); on a
- * non-TTY stdin (piped input, tests) it falls back to plain readline so
- * nothing blocks or throws.
+ * Reads answers from the terminal. On a real interactive terminal (TTY on
+ * BOTH stdin and stdout, TERM not dumb) this uses the @inquirer/prompts
+ * prompt; otherwise it falls back to plain readline so nothing blocks or
+ * throws. The stdout check matters: inquirer renders to stdout, so a
+ * piped/redirected stdout would leave the process waiting at an invisible
+ * prompt that reads exactly like a hang.
  */
 export function defaultPromptLine(): AskUserFn {
   return async (question: string): Promise<string> => {
     const q = typeof question === "string" && question.trim() !== "" ? question : FALLBACK_QUESTION;
-    if (process.stdin.isTTY) {
+    if (process.stdin.isTTY && process.stdout.isTTY && process.env.TERM !== "dumb") {
       return await input({ message: q });
     }
     const rl = createInterface({ input: process.stdin, output: process.stdout });
