@@ -16,6 +16,7 @@ interface ScriptTurn {
 
 let script: ScriptTurn[] = [];
 let callCount = 0;
+let lastBody: unknown;
 let server: ReturnType<typeof Bun.serve>;
 let port = 0;
 
@@ -24,7 +25,7 @@ beforeAll(async () => {
     port: 0,
     async fetch(req) {
       if (new URL(req.url).pathname !== "/v1/chat/completions") return new Response("nf", { status: 404 });
-      await req.json();
+      lastBody = await req.json();
       const turn = script[callCount];
       callCount += 1;
 
@@ -106,6 +107,39 @@ describe("planCourse", () => {
 
     expect(result).toEqual(outline);
     expect(result.modules[2].sources).toEqual(["https://bun.sh/docs/http/server", "https://bun.sh/docs/test"]);
+  });
+
+  test("keeps research findings and topic in the user turn, not the system prompt", async () => {
+    const outline: CourseOutline = {
+      name: "Docker",
+      topic: "docker",
+      modules: [
+        { id: "01", title: "Images", concepts: ["build", "layers"], difficulty: "intro" },
+        { id: "02", title: "Compose", concepts: ["services", "volumes"], difficulty: "core" },
+      ],
+    };
+    script = [{ tool: { name: "submit_outline", args: outline } }, { content: "done" }];
+    callCount = 0;
+
+    const result = await planCourse({
+      provider: provider(),
+      prompt: "docker",
+      research: {
+        findings: [{ claim: "Dockerfile layers are cached", source_url: "https://docs.docker.com/build/cache/" }],
+        caveats: "thin",
+      },
+    });
+
+    expect(result).toEqual(outline);
+    const body = lastBody as { messages: Array<{ role: string; content: string }> };
+    const system = body.messages.find((m) => m.role === "system")?.content ?? "";
+    const user = body.messages.find((m) => m.role === "user")?.content ?? "";
+    expect(system).toContain("curriculum designer");
+    expect(system).not.toContain("Research findings");
+    expect(system).not.toContain("Dockerfile layers are cached");
+    expect(user).toContain("Topic: docker");
+    expect(user).toContain("Dockerfile layers are cached");
+    expect(user).toContain("https://docs.docker.com/build/cache/");
   });
 
   test("retries once when the first reply has no submit_outline call", async () => {

@@ -14,10 +14,9 @@ export interface ResearchOptions {
 
 const MAX_RESEARCH_ITERATIONS = 12;
 
-function buildResearchPrompt(topic: string): string {
+function buildResearchPrompt(): string {
   return [
-    `You are a research assistant for course authoring. Topic: ${topic}.`,
-    "Use the web_search tool to gather CURRENT, sourced facts (official docs, best practices, current API shapes).",
+    "You are a research assistant for course authoring. Use the web_search tool to gather CURRENT, sourced facts about the course topic in your task (official docs, best practices, current API shapes).",
     "Search as many times as you need. When done, call submit_findings ONCE with the report: every finding MUST have",
     'a claim and a source_url of the page supporting it; if results are thin or conflicting, say so in caveats.',
     'Never invent a source_url. After submit_findings, reply "done".',
@@ -129,7 +128,7 @@ async function attempt(
   const { tool: submitFindingsTool, captured } = createSubmitFindingsTool();
   const runtime = createAgentRuntime({
     model: buildModel(opts.provider),
-    systemPrompt: buildResearchPrompt(opts.prompt),
+    systemPrompt: buildResearchPrompt(),
     tools: [opts.webSearchTool, submitFindingsTool],
     maxIterations: MAX_RESEARCH_ITERATIONS,
     hooks: opts.progress ? { onEvent: progressLogger("research") } : undefined,

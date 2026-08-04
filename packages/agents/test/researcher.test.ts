@@ -11,6 +11,7 @@ import { runResearch } from "../src/researcher";
 // "fail": plain text both attempts — no report ever.
 let mode: "happy" | "retry" | "fail" = "happy";
 let callCount = 0;
+let lastBody: unknown;
 let server: ReturnType<typeof Bun.serve>;
 let provider: ProviderSelection;
 
@@ -21,6 +22,7 @@ beforeAll(() => {
       if (new URL(req.url).pathname !== "/v1/chat/completions") {
         return new Response("nf", { status: 404 });
       }
+      lastBody = await req.json();
       const chunk = (o: unknown) => `data: ${JSON.stringify(o)}\n\n`;
       const call = callCount++;
       const stream = new ReadableStream<Uint8Array>({
@@ -144,6 +146,22 @@ describe("runResearch", () => {
       findings: [{ claim: "X is current", source_url: "https://example.com/docs" }],
       caveats: "thin",
     });
+  });
+
+  test("keeps the topic in the user turn, not the system prompt", async () => {
+    mode = "happy";
+    callCount = 0;
+    await runResearch({
+      provider,
+      prompt: "docker networking",
+      webSearchTool: webSearchTool(),
+    });
+    const body = lastBody as { messages: Array<{ role: string; content: string }> };
+    const system = body.messages.find((m) => m.role === "system")?.content ?? "";
+    const user = body.messages.find((m) => m.role === "user")?.content ?? "";
+    expect(system).toContain("research assistant for course authoring");
+    expect(system).not.toContain("docker networking");
+    expect(user).toContain("docker networking");
   });
 
   test("retries once when the first reply has no submit_findings call", async () => {
