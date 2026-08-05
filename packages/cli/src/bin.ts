@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { Command, CommanderError } from "commander";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { resolveCourse, findModule, type ModuleDesc } from "@tutor/shared";
 import { resolveProvider, type ProviderSelection } from "@tutor/llms";
@@ -22,6 +22,10 @@ import { findCourseRoot } from "./root";
 import { loadUserConfig } from "./config";
 
 const userConfig = loadUserConfig();
+
+// Read at runtime (not bundled): ../package.json is the package root both in
+// the repo (packages/cli/) and in the installed npm package (dist/).
+const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
 
 const ENV_HELP = `env:
   OPENAI_API_KEY / OPENAI_BASE_URL   (or OLLAMA_HOST)  — the coach's brain
@@ -108,6 +112,8 @@ async function authorSingleModule(courseRoot: string, title: string, provider: P
   });
   const task = `Author the module now. Title: "${module.title}". Module dir: ${module.dir}.
 Follow the order in the policy: tests first, then exercise stub, then README, then run_tests to verify the grader loads. Finish with a summary of what the learner must implement.`;
+  console.log(`authoring ${module.dir}…`);
+  console.log("waiting for model…");
   const result = await session.run(task);
   console.log("— authoring summary —");
   console.log(result);
@@ -121,8 +127,8 @@ function printBuildSummary(result: BuildCourseResult, total: number): void {
 
 program
   .command("new")
-  .description("generate a course from a prompt: clarify → research → plan → author every module")
-  .argument("[prompt...]", "course description, e.g. Express routing for beginners (a module title in append mode)")
+  .description("generate a course from a course name: clarify → research → plan → author every module")
+  .argument("[course...]", "course name — every word is the name, no quotes needed, e.g. make a docker course (a module title in append mode)")
   .option("--dir <path>", "course directory (default: current directory)")
   .option("--name <name>", "course display name (stub mode)")
   .option("--topic <topic>", "course topic (stub mode)")
@@ -158,10 +164,11 @@ program
       }
 
       if (!prompt) {
-        throw new CliError("new needs a course description — e.g. lyceum new Express routing for beginners");
+        throw new CliError("new needs a course name — e.g. lyceum new Express routing for beginners");
       }
       const provider = resolveProvider(userConfig.provider);
       if (!provider) throw new CliError("new needs an LLM — set OPENAI_API_KEY or OLLAMA_HOST");
+      console.log(`lyceum ${VERSION} — course: "${prompt}" — ${provider.label} (${provider.modelId})`);
 
       // Resume: an existing checkpoint whose prompt matches re-runs the build
       // for modules still pending/failed (all-drafted = a no-op).
@@ -192,6 +199,7 @@ program
       let context = prompt;
       if (!opts.yes) {
         console.log("clarifying…");
+        console.log("waiting for model…"); // first-token latency can be long; never a silent hang
         const { recap } = await runClarify({ provider, prompt, progress: true });
         context = `${prompt}\n\nClarified: ${recap}`;
       }
@@ -201,12 +209,14 @@ program
       let research: ResearchReport | null = null;
       if (opts.research !== false) {
         console.log("researching…");
+        console.log("waiting for model…");
         const { web_search } = buildAuthorTools({ courseRoot: targetDir, modules: [] });
         research = await runResearch({ provider, prompt: context, webSearchTool: web_search, progress: true });
       }
 
       // 3. Plan.
       console.log("planning…");
+      console.log("waiting for model…");
       const outline = await planCourse({
         provider,
         prompt: context,
@@ -219,6 +229,7 @@ program
 
       // 4. Author every module (continue-on-error; resume via the checkpoint).
       console.log("authoring…");
+      console.log("waiting for model…");
       const result = await buildCourse({ provider, courseRoot: targetDir, outline, prompt, progress: true });
       printBuildSummary(result, outline.modules.length);
       if (result.failed.length) throw new CliError(`${result.failed.length} module(s) failed — re-run lyceum new to resume`);

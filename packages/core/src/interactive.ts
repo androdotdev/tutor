@@ -1,4 +1,3 @@
-import { input } from "@inquirer/prompts";
 import { createTool } from "@cline/shared";
 import { createInterface } from "node:readline/promises";
 
@@ -37,19 +36,15 @@ function fallbackQuestion(topic: string | undefined, answered: number): string {
 }
 
 /**
- * Reads answers from the terminal. On a real interactive terminal (TTY on
- * BOTH stdin and stdout, TERM not dumb) this uses the @inquirer/prompts
- * prompt; otherwise it falls back to plain readline so nothing blocks or
- * throws. The stdout check matters: inquirer renders to stdout, so a
- * piped/redirected stdout would leave the process waiting at an invisible
- * prompt that reads exactly like a hang.
+ * Reads answers from the terminal with plain readline, which prints the
+ * question as a normal text line and is visible on every terminal. Inquirer
+ * is deliberately not used: its ANSI line rewrites leave the process in raw
+ * mode with no visible prompt on terminals that don't render them — which
+ * reads exactly like a hang.
  */
 export function defaultPromptLine(): AskUserFn {
   return async (question: string): Promise<string> => {
     const q = typeof question === "string" && question.trim() !== "" ? question : FALLBACK_QUESTION;
-    if (process.stdin.isTTY && process.stdout.isTTY && process.env.TERM !== "dumb") {
-      return await input({ message: q });
-    }
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     try {
       return await rl.question(q);

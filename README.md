@@ -36,8 +36,8 @@ Built as a small monorepo of packages on top of the `@cline/*` SDK agent loop.
 
 ```sh
 npm install -g @androff/tutor-ai
-# point at a course (defaults to the current directory)
-lyceum --course /path/to/course    # or: cd /path/to/course && lyceum
+cd /path/to/course
+lyceum
 ```
 
 Inside the TUI: pick a module, ask about the exercise, let the coach run the
@@ -63,9 +63,9 @@ course/
 ```
 
 Scaffold an empty course with `lyceum new --stub --dir <path>`. Generate a
-full course from a description with `lyceum new <prompt> [--dir <path>]` —
-positionals are joined into one prompt (no quoting needed), then the pipeline
-clarifies, researches, plans, and authors every module (see the CLI
+full course from a name with `lyceum new <course-name> [--dir <path>]` —
+every positional word is part of the name (no quoting needed), then the
+pipeline clarifies, researches, plans, and authors every module (see the CLI
 reference).
 
 ## CLI
@@ -73,7 +73,7 @@ reference).
 | Command | Description |
 | --- | --- |
 | `lyceum` / `lyceum run [module]` | Open the Socratic TUI (optionally straight into a module) |
-| `lyceum new <prompt> [--dir <path>]` | Generate a course: clarify → research → plan → author every module |
+| `lyceum new <course-name> [--dir <path>]` | Generate a course: clarify → research → plan → author every module |
 | `lyceum new --stub [--dir <path>]` | Scaffold an empty course (no LLM) |
 | `lyceum list` | List the course modules |
 | `lyceum test [module]` | Run a module's tests headlessly |

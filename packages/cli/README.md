@@ -37,11 +37,11 @@ While the coach is working, the streaming answer renders incrementally; the
 transcript follows the tail automatically (re-engage scroll keys to browse
 history, then press Enter to snap back).
 
-### `lyceum new <prompt> [--dir <path>]`
+### `lyceum new <course-name> [--dir <path>]`
 
-Generate a course from a description. Positional arguments are joined into a
-single prompt, so quoting is never required: `lyceum new make a docker course`
-works. Four stages run in sequence:
+Generate a course from a course name. Every positional word is part of the
+name, so quoting is never required: `lyceum new make a docker course` works.
+Four stages run in sequence:
 
 1. **Clarify** — asks up to 3 questions (level, scope, format) before planning;
    `--yes` skips them.
@@ -55,8 +55,9 @@ works. Four stages run in sequence:
    first: `exercise/`, `tests/`, `solutions/`), continuing past a failing
    module; each module's status is recorded in the checkpoint.
 
-Every stage streams its reasoning and tool calls live, so a run never looks
-hung; a failed research or plan stage reports exactly what the model got wrong.
+Every stage streams its reasoning and tool calls live and prints a
+`waiting for model…` line before each model call, so a run never looks hung;
+a failed research or plan stage reports exactly what the model got wrong.
 
 ```
 lyceum new Express routing for beginners --dir ./express-course --modules 4
