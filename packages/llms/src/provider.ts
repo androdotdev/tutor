@@ -1,4 +1,14 @@
 import type { AgentModel, AgentMessage, AgentModelEvent } from "@cline/shared";
+import { streamSimple as openaiCompletionsStream } from "@earendil-works/pi-ai/api/openai-completions";
+import type {
+  AssistantMessageEvent,
+  Context,
+  Message,
+  Model,
+  SimpleStreamOptions,
+  TextContent,
+  Tool,
+} from "@earendil-works/pi-ai";
 
 export interface ProviderSelection {
   provider: "openai" | "ollama";
@@ -49,188 +59,149 @@ export function resolveProvider(config?: ProviderConfig): ProviderSelection | nu
   return null;
 }
 
-/* ------------------------ Cline AgentMessage -> provider ------------------------ */
+/* ------------------- Cline AgentMessage <-> pi Context bridge ------------------- */
 
-function renderMessages(
-  systemPrompt: string | undefined,
-  messages: readonly AgentMessage[],
-): Array<Record<string, unknown>> {
-  const out: Array<Record<string, unknown>> = [];
-  if (systemPrompt) out.push({ role: "system", content: systemPrompt });
+const EMPTY_USAGE = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
 
-  for (const m of messages) {
-    if (m.role === "user") {
-      const text = m.content.filter((p) => p.type === "text").map((p) => p.text).join("");
-      if (text) out.push({ role: "user", content: text });
-    } else if (m.role === "assistant") {
-      const msg: Record<string, unknown> = { role: "assistant" };
-      const text = m.content.filter((p) => p.type === "text").map((p) => p.text).join("");
-      if (text) msg.content = text;
-      const calls = m.content
-        .filter((p) => p.type === "tool-call")
-        .map((p) => ({
-          id: p.toolCallId,
-          type: "function",
-          function: {
-            name: p.toolName,
-            arguments:
-              typeof p.input === "string" ? p.input : JSON.stringify(p.input ?? {}),
-          },
-        }));
-      if (calls.length) msg.tool_calls = calls;
-      out.push(msg);
-    } else if (m.role === "tool") {
-      for (const p of m.content) {
-        if (p.type === "tool-result") {
-          out.push({
-            role: "tool",
-            tool_call_id: p.toolCallId,
-            content:
-              typeof p.output === "string" ? p.output : JSON.stringify(p.output ?? null),
-          });
-        }
+function parseToolArgs(input: unknown): Record<string, unknown> {
+  if (typeof input === "string") {
+    try {
+      const parsed = JSON.parse(input);
+      return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  }
+  return input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+}
+
+function toPiMessage(m: AgentMessage, model: Model<"openai-completions">): Message {
+  if (m.role === "user") {
+    const text = m.content.filter((p) => p.type === "text").map((p) => p.text).join("");
+    // Empty array form makes the wire converter skip the message entirely.
+    return { role: "user", content: text || [], timestamp: 0 };
+  }
+  if (m.role === "assistant") {
+    const content: (TextContent | { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> })[] = [];
+    for (const p of m.content) {
+      if (p.type === "text") content.push({ type: "text", text: p.text });
+      else if (p.type === "tool-call") {
+        content.push({ type: "toolCall", id: p.toolCallId, name: p.toolName, arguments: parseToolArgs(p.input) });
       }
     }
+    return {
+      role: "assistant",
+      content,
+      api: "openai-completions",
+      provider: model.provider,
+      model: model.id,
+      usage: EMPTY_USAGE,
+      stopReason: "stop",
+      timestamp: 0,
+    };
   }
-  return out;
+  // role === "tool"
+  const parts: TextContent[] = [];
+  let toolCallId = "";
+  let toolName = "";
+  let isError = false;
+  for (const p of m.content) {
+    if (p.type === "tool-result") {
+      toolCallId = p.toolCallId;
+      toolName = p.toolName;
+      isError = !!p.isError;
+      parts.push({ type: "text", text: typeof p.output === "string" ? p.output : JSON.stringify(p.output ?? null) });
+    }
+  }
+  return { role: "toolResult", toolCallId, toolName, content: parts, isError, timestamp: 0 };
 }
 
-/* --------------------------------- SSE stream -------------------------------- */
+function toPiTool(t: { name: string; description: string; inputSchema: Record<string, unknown> }): Tool {
+  return {
+    name: t.name,
+    description: t.description,
+    // Plain JSON-Schema objects pass through to the wire untouched; TypeBox
+    // validation only runs inside pi-agent-core's loop (P3), not the stream.
+    parameters: (t.inputSchema ?? { type: "object", properties: {} }) as unknown as Tool["parameters"],
+  };
+}
 
-async function* sse(url: string, init: RequestInit) {
-  const res = await fetch(url, init);
-  if (!res.ok || !res.body) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`provider ${res.status}: ${text.slice(0, 300) || res.statusText}`);
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buf.indexOf("\n")) !== -1) {
-      const line = buf.slice(0, idx).replace(/\r$/, "");
-      buf = buf.slice(idx + 1);
-      if (!line.startsWith("data: ")) continue;
-      const payload = line.slice(6).trim();
-      if (payload === "[DONE]") return;
-      try {
-        yield JSON.parse(payload) as SseChunk;
-      } catch {
-        /* skip malformed heartbeats */
+/** pi stream events -> cline AgentModelEvent deltas. */
+function toClineEvents(e: AssistantMessageEvent): AgentModelEvent[] {
+  switch (e.type) {
+    case "text_delta":
+      return [{ type: "text-delta", text: e.delta }];
+    case "toolcall_end":
+      // pi assembles tool-call fragments (by index and id) into one block, so a
+      // single event carries the complete call — no per-fragment id bookkeeping.
+      return [{
+        type: "tool-call-delta",
+        toolCallId: e.toolCall.id,
+        toolName: e.toolCall.name,
+        inputText: JSON.stringify(e.toolCall.arguments),
+      }];
+    case "done": {
+      const events: AgentModelEvent[] = [];
+      const u = e.message.usage;
+      if (u && (u.input > 0 || u.output > 0)) {
+        events.push({
+          type: "usage",
+          usage: { inputTokens: u.input, outputTokens: u.output, cacheReadTokens: u.cacheRead, cacheWriteTokens: u.cacheWrite },
+        });
       }
+      events.push({
+        type: "finish",
+        reason: e.reason === "toolUse" ? "tool-calls" : e.reason === "length" ? "max-tokens" : "stop",
+      });
+      return events;
     }
+    case "error":
+      return [{ type: "finish", reason: e.reason === "aborted" ? "aborted" : "error", error: e.error.errorMessage ?? "stream error" }];
+    default:
+      return [];
   }
 }
 
-interface SseToolCallDelta {
-  index?: number;
-  id?: string;
-  function?: { name?: string; arguments?: string };
-}
-interface SseChoice {
-  delta?: { content?: string; tool_calls?: SseToolCallDelta[] };
-  finish_reason?: string | null;
-}
-interface SseChunk {
-  choices?: SseChoice[];
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
-}
-
-function parseChunk(chunk: SseChunk, events: AgentModelEvent[], firstIdByIndex: Map<number, string>): void {
-  const choice = chunk.choices?.[0];
-  if (choice?.delta?.content) {
-    events.push({ type: "text-delta", text: choice.delta.content });
-  }
-  for (const tc of choice?.delta?.tool_calls ?? []) {
-    const index = tc.index ?? 0;
-    // OpenAI-style streaming sends `id` + `name` in the first delta of a tool
-    // call and `index` + `arguments` fragments afterwards. Remember the id per
-    // index so every fragment of one call carries the same toolCallId; without
-    // this the runtime keys the first fragment by its id and later fragments by
-    // `tool_<index>`, splitting one call into two records (one with a name and
-    // no args, one with args and no name that is dropped as missing_name).
-    let toolCallId: string | undefined;
-    const remembered = firstIdByIndex.get(index);
-    if (typeof tc.id === "string") {
-      toolCallId = tc.id;
-      if (remembered === undefined) firstIdByIndex.set(index, tc.id);
-    } else {
-      toolCallId = remembered;
-    }
-    events.push({
-      type: "tool-call-delta",
-      index,
-      toolCallId,
-      toolName: tc.function?.name,
-      inputText: tc.function?.arguments,
-    });
-  }
-  if (typeof choice?.finish_reason === "string") {
-    events.push({
-      type: "finish",
-      reason: choice.finish_reason === "tool_calls" ? "tool-calls" : "stop",
-    });
-  }
-  if (chunk.usage && typeof chunk.usage.prompt_tokens === "number") {
-    events.push({
-      type: "usage",
-      usage: {
-        inputTokens: chunk.usage.prompt_tokens,
-        outputTokens: chunk.usage.completion_tokens,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-      },
-    });
-  }
-}
-
-/** Cline AgentModel backed by an OpenAI-compatible /chat/completions stream. */
+/** Cline AgentModel backed by pi-ai's openai-completions stream. */
 export function buildModel(sel: ProviderSelection): AgentModel {
+  const model: Model<"openai-completions"> = {
+    id: sel.modelId,
+    name: sel.modelId,
+    api: "openai-completions",
+    provider: sel.provider,
+    baseUrl: sel.baseUrl,
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 4_096,
+  };
+
   return {
     async *stream(request) {
       // One stream per run covers a whole stage's generation, so a long
       // outline can legitimately take minutes; 60s was aborting mid-stream.
       const timeoutMs = Math.max(1_000, Number(process.env.TUTOR_REQUEST_TIMEOUT_MS ?? 300_000) || 300_000);
-      const headers: Record<string, string> = { "content-type": "application/json" };
-      if (sel.apiKey) headers.authorization = `Bearer ${sel.apiKey}`;
+      const signal = request.signal
+        ? AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs);
 
-      const body = {
-        model: sel.modelId,
-        messages: renderMessages(request.systemPrompt, request.messages),
-        tools: (request.tools ?? []).map((t) => ({
-          type: "function",
-          function: {
-            name: t.name,
-            description: t.description,
-            parameters: (t.inputSchema ?? { type: "object", properties: {} }) as Record<string, unknown>,
-          },
-        })),
-        stream: true,
+      const context: Context = {
+        systemPrompt: request.systemPrompt,
+        messages: request.messages.map((m) => toPiMessage(m, model)),
+        tools: request.tools.map(toPiTool),
       };
+      const options: SimpleStreamOptions = { apiKey: sel.apiKey, signal };
 
-      const events: AgentModelEvent[] = [];
-      const firstIdByIndex = new Map<number, string>();
-      let finished = false;
-      for await (const chunk of sse(`${sel.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: request.signal
-          ? AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)])
-          : AbortSignal.timeout(timeoutMs),
-      })) {
-        parseChunk(chunk, events, firstIdByIndex);
-        if (events.some((e) => e.type === "finish")) finished = true;
-        // Yield incrementally so the runtime forwards deltas live (streaming
-        // UI) instead of only after the HTTP stream closes.
-        if (events.length) yield* events.splice(0);
-      }
-      if (!finished) {
-        yield { type: "finish", reason: "stop" };
+      for await (const e of openaiCompletionsStream(model, context, options)) {
+        yield* toClineEvents(e);
       }
     },
   };
