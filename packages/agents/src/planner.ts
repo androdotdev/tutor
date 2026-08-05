@@ -52,6 +52,12 @@ function buildPlanSystemPrompt(clamped: number | null): string {
     "   relevant urls from the research findings when provided.",
     "3. Continue until every module of the course has its own file under .lyceum/modules/.",
     "",
+    "Ordering: the id IS the teaching sequence — 01 is the first lesson. Decide the order before",
+    "numbering: each module must build only on knowledge from earlier modules, so prerequisites",
+    "come first (e.g. a networking refresher precedes any module that assumes networking).",
+    "Difficulty ramps intro → core → capstone across that order: no core module before an intro one,",
+    "no capstone before a core one.",
+    "",
     "The plan is only complete once all module files exist on disk.",
   ].join("\n");
   const cap = clamped !== null ? `\n\nThe course must have exactly ${clamped} modules.` : "";

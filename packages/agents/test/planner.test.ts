@@ -170,6 +170,8 @@ describe("planCourse", () => {
     const system = text(body.messages.find((m) => m.role === "system") ?? { content: "" });
     const user = text(body.messages.find((m) => m.role === "user") ?? { content: "" });
     expect(system).toContain("curriculum designer");
+    expect(system).toContain("the id IS the teaching sequence");
+    expect(system).toContain("each module must build only on knowledge from earlier modules");
     expect(system).not.toContain("Research findings");
     expect(system).not.toContain("Dockerfile layers are cached");
     expect(user).toContain("Topic: docker");
