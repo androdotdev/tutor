@@ -1,7 +1,7 @@
 # PLAN — migrate to `@earendil-works/{pi-agent-core,pi-ai,pi-tui}`
 
-Status: **P0 complete (verified + spike passed)**. P1–P3 in progress on
-`feat/pi-migration`. P4/P5 deferred as scoped below.
+Status: **P0–P3 complete** (each landed green on `feat/pi-migration`: `980df44` plan,
+`baaf176` P1, `baefe76` P2, `8736f33` P3). P4/P5 deferred as scoped below.
 
 ## Why
 
@@ -65,7 +65,7 @@ class at the SDK layer for every tool at once, permanently.
 NOT using: `@earendil-works/pi-coding-agent` (its tools/TUI need the full app runtime
 — `ExtensionContext`, sessions; the repo's `App.ts` isn't being replaced).
 
-## P1 — Provider/model layer (current step)
+## P1 — Provider/model layer ✅ (`baaf176`)
 
 Swap `packages/llms/src/provider.ts` internals to pi's `openai-completions`
 `streamSimple`. Public surface unchanged: `resolveProvider`, `ProviderSelection`,
@@ -83,7 +83,7 @@ Swap `packages/llms/src/provider.ts` internals to pi's `openai-completions`
   `@cline/*` in all package.jsons (unused) until P0–P4 merged — rollback stays a
   `git revert`.
 
-## P2 — Tool layer
+## P2 — Tool layer ✅ (`baefe76`)
 
 Rewrite `packages/core/src/tools.ts` and `interactive.ts` tool-by-tool
 (`run_tests`, `read_file`, `write_file`, `grep`, `web_search`, `ask_user`) as pi
@@ -94,7 +94,7 @@ whole fallback path** — `FALLBACK_QUESTION`, topic-aware variant, manual
 `typeof`/empty-string guards — dead code masking the exact failure validation now
 surfaces. Keep only `MAX_ASK_USER_CALLS` (business logic).
 
-## P3 — Agent runtime layer
+## P3 — Agent runtime layer ✅ (`8736f33`)
 
 Replace `createAgentRuntime` call sites (`session.ts`, `clarify.ts`, `researcher.ts`,
 `planner.ts`, `course-builder.ts`, `polish.ts`) with pi `Agent`. 6 files, mechanical
