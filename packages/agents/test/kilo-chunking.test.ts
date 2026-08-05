@@ -3,11 +3,20 @@
 // The provider must remember the id per index so every fragment lands in one
 // record; otherwise the runtime splits the call (name record with no args runs
 // with {}, args record with no name is dropped as missing_name) and the query
-// never reaches search().
+// never reaches search() / the report never reaches the file.
+//
+// P5: the report channel is now write_file — the CONTENT is a tool argument,
+// so this replays the chunking on the new channel and asserts the outline
+// lands on disk and validates.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { runResearch } from "../src/researcher";
 import { buildAuthorTools } from "@tutor/core";
 import { resolveProvider, type ProviderSelection } from "@tutor/llms";
+
+const COURSE_ROOT = "/tmp/lyceum-kilo";
+const REPORT_FILE = join(COURSE_ROOT, ".lyceum", "research.json");
 
 let server: ReturnType<typeof Bun.serve>;
 let provider: ProviderSelection;
@@ -34,6 +43,7 @@ function finishToolCalls() {
 }
 
 beforeAll(() => {
+  mkdirSync(COURSE_ROOT, { recursive: true });
   server = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -47,19 +57,24 @@ beforeAll(() => {
             enc(nameOnlyDelta(0, "call_ws", "web_search"));
             enc(argsOnlyDelta(0, JSON.stringify({ query: "Docker secrets best practices" })));
             enc(finishToolCalls());
-          } else {
-            // submit_findings: same chunking.
-            enc(nameOnlyDelta(0, "call_sf", "submit_findings"));
-            enc(
-              argsOnlyDelta(
-                0,
-                JSON.stringify({
-                  findings: [{ claim: "Docker secrets belong in Swarm secrets, not env vars.", source_url: "https://docs.docker.com" }],
-                  caveats: "kilo chunked",
-                }),
-              ),
-            );
+          } else if (call === 1) {
+            // write_file: id+name first, then the content split across TWO
+            // argument fragments (kilo.ai splits long payloads mid-JSON).
+            const args = JSON.stringify({
+              path: ".lyceum/research.json",
+              content: JSON.stringify({
+                findings: [{ claim: "Docker secrets belong in Swarm secrets, not env vars.", source_url: "https://docs.docker.com" }],
+                caveats: "kilo chunked",
+              }),
+            });
+            const mid = Math.floor(args.length / 2);
+            enc(nameOnlyDelta(0, "call_wf", "write_file"));
+            enc(argsOnlyDelta(0, args.slice(0, mid)));
+            enc(argsOnlyDelta(0, args.slice(mid)));
             enc(finishToolCalls());
+          } else {
+            enc(chunk({ choices: [{ delta: { content: "done" } }] }));
+            enc(chunk({ choices: [{ delta: {}, finish_reason: "stop" }] }));
           }
           enc("data: [DONE]\n\n");
           c.close();
@@ -83,11 +98,12 @@ afterAll(() => {
 });
 
 describe("kilo.ai chunked tool-call streaming", () => {
-  test("query from split fragments reaches search() and the report parses", async () => {
+  test("split fragments reach search() and the chunked report lands on disk", async () => {
     callCount = 0;
+    rmSync(join(COURSE_ROOT, ".lyceum"), { recursive: true, force: true });
     const seen: string[] = [];
     const webSearchTool = buildAuthorTools(
-      { courseRoot: "/tmp/lyceum-kilo", modules: [] },
+      { courseRoot: COURSE_ROOT, modules: [] },
       {
         search: async (query: string) => {
           seen.push(query);
@@ -96,10 +112,13 @@ describe("kilo.ai chunked tool-call streaming", () => {
       },
     ).web_search;
 
-    const report = await runResearch({ provider, prompt: "docker secrets", webSearchTool });
+    const report = await runResearch({ provider, prompt: "docker secrets", courseRoot: COURSE_ROOT, webSearchTool });
 
     expect(seen).toEqual(["Docker secrets best practices"]);
     expect(report.findings).toHaveLength(1);
     expect(report.findings[0].claim).toContain("Docker secrets");
+    // The chunked write_file call must have produced the real artifact.
+    expect(existsSync(REPORT_FILE)).toBe(true);
+    expect(JSON.parse(readFileSync(REPORT_FILE, "utf8"))).toEqual(report);
   });
 });

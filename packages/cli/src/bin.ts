@@ -199,7 +199,7 @@ program
       if (opts.research !== false) {
         console.log("researching…");
         const { web_search } = buildAuthorTools({ courseRoot: targetDir, modules: [] });
-        research = await runResearch({ provider, prompt: context, webSearchTool: web_search, progress: true });
+        research = await runResearch({ provider, prompt: context, courseRoot: targetDir, webSearchTool: web_search, progress: true });
       }
 
       // 3. Plan.
@@ -207,6 +207,7 @@ program
       const outline = await planCourse({
         provider,
         prompt: context,
+        courseRoot: targetDir,
         research,
         moduleCountOverride: moduleCount,
         progress: true,

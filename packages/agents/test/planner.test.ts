@@ -1,5 +1,7 @@
-// Planner stage tests: mock-SSE outline capture (round-trip, retry, hard
-// failure, module cap) plus course-plan checkpoint file round-trips.
+// Planner stage tests: mock-SSE outline handoff (the model writes
+// .lyceum/outline.json via write_file; the stage reads + validates it on real
+// disk), covering round-trip, retry, hard failure, and module cap, plus
+// course-plan checkpoint file round-trips.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,8 +21,10 @@ let callCount = 0;
 let lastBody: unknown;
 let server: ReturnType<typeof Bun.serve>;
 let port = 0;
+let courseRoot: string;
 
 beforeAll(async () => {
+  courseRoot = mkdtempSync(join(tmpdir(), "lyceum-plan-stage-"));
   server = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -68,7 +72,27 @@ beforeAll(async () => {
 
 afterAll(() => {
   server.stop(true);
+  try {
+    rmSync(courseRoot, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
 });
+
+/** The model's delivery channel: a write_file turn carrying the outline JSON. */
+function writeOutline(args: unknown): ScriptTurn {
+  return {
+    tool: {
+      name: "write_file",
+      args: { path: ".lyceum/outline.json", content: JSON.stringify(args) },
+    },
+  };
+}
+
+/** Fresh slate: a stale outline file from a previous test must not leak in. */
+function resetOutline(): void {
+  rmSync(join(courseRoot, ".lyceum"), { recursive: true, force: true });
+}
 
 const provider = () => ({
   provider: "openai" as const,
@@ -79,7 +103,7 @@ const provider = () => ({
 });
 
 describe("planCourse", () => {
-  test("returns the submitted outline exactly, sources included", async () => {
+  test("returns the written outline exactly, sources included", async () => {
     const outline: CourseOutline = {
       name: "Bun Foundations",
       topic: "learn the bun runtime end to end",
@@ -100,10 +124,11 @@ describe("planCourse", () => {
         },
       ],
     };
-    script = [{ tool: { name: "submit_outline", args: outline } }, { content: "done" }];
+    script = [writeOutline(outline), { content: "done" }];
     callCount = 0;
+    resetOutline();
 
-    const result = await planCourse({ provider: provider(), prompt: "learn the bun runtime end to end" });
+    const result = await planCourse({ provider: provider(), prompt: "learn the bun runtime end to end", courseRoot });
 
     expect(result).toEqual(outline);
     expect(result.modules[2].sources).toEqual(["https://bun.sh/docs/http/server", "https://bun.sh/docs/test"]);
@@ -118,12 +143,14 @@ describe("planCourse", () => {
         { id: "02", title: "Compose", concepts: ["services", "volumes"], difficulty: "core" },
       ],
     };
-    script = [{ tool: { name: "submit_outline", args: outline } }, { content: "done" }];
+    script = [writeOutline(outline), { content: "done" }];
     callCount = 0;
+    resetOutline();
 
     const result = await planCourse({
       provider: provider(),
       prompt: "docker",
+      courseRoot,
       research: {
         findings: [{ claim: "Dockerfile layers are cached", source_url: "https://docs.docker.com/build/cache/" }],
         caveats: "thin",
@@ -148,7 +175,7 @@ describe("planCourse", () => {
     expect(user).toContain("https://docs.docker.com/build/cache/");
   });
 
-  test("retries once when the first reply has no submit_outline call", async () => {
+  test("retries once when the first reply writes no outline file", async () => {
     const outline: CourseOutline = {
       name: "Git Essentials",
       topic: "version control with git",
@@ -157,26 +184,24 @@ describe("planCourse", () => {
         { id: "02", title: "Branches and Merges", concepts: ["branch", "merge", "conflicts"], difficulty: "core" },
       ],
     };
-    script = [
-      { content: "Let me think about the structure first." },
-      { tool: { name: "submit_outline", args: outline } },
-      { content: "done" },
-    ];
+    script = [{ content: "Let me think about the structure first." }, writeOutline(outline), { content: "done" }];
     callCount = 0;
+    resetOutline();
 
-    const result = await planCourse({ provider: provider(), prompt: "version control with git" });
+    const result = await planCourse({ provider: provider(), prompt: "version control with git", courseRoot });
 
     expect(result).toEqual(outline);
   });
 
-  test("throws when the model never submits a valid outline", async () => {
+  test("throws when the model never writes a valid outline", async () => {
     script = [
       { content: "No tools here, just text." },
-      { content: "Still refusing to call submit_outline." },
+      { content: "Still refusing to call write_file." },
     ];
     callCount = 0;
+    resetOutline();
 
-    await expect(planCourse({ provider: provider(), prompt: "anything" })).rejects.toThrow(/Plan stage failed: the model finished without calling submit_outline/);
+    await expect(planCourse({ provider: provider(), prompt: "anything", courseRoot })).rejects.toThrow(/Plan stage failed: the model finished without writing \.lyceum\/outline\.json/);
   });
 
   test("moduleCountOverride requires an exact module count, retrying on mismatch", async () => {
@@ -197,13 +222,11 @@ describe("planCourse", () => {
         { id: "04", title: "Caching", concepts: ["etags", "cache headers"], difficulty: "capstone" },
       ],
     };
-    script = [
-      { tool: { name: "submit_outline", args: short } },
-      { tool: { name: "submit_outline", args: exact } },
-    ];
+    script = [writeOutline(short), writeOutline(exact)];
     callCount = 0;
+    resetOutline();
 
-    const result = await planCourse({ provider: provider(), prompt: "http fundamentals", moduleCountOverride: 4 });
+    const result = await planCourse({ provider: provider(), prompt: "http fundamentals", courseRoot, moduleCountOverride: 4 });
 
     expect(result.modules).toHaveLength(4);
   });
@@ -211,11 +234,11 @@ describe("planCourse", () => {
 
 describe("course plan checkpoint file", () => {
   let root: string;
-  let courseRoot: string;
+  let planRoot: string;
 
   beforeAll(() => {
     root = mkdtempSync(join(tmpdir(), "lyceum-plan-"));
-    courseRoot = join(root, "course");
+    planRoot = join(root, "course");
   });
 
   afterAll(() => {
@@ -237,7 +260,7 @@ describe("course plan checkpoint file", () => {
   };
 
   test("newCoursePlan -> saveCoursePlan -> loadCoursePlan round-trips", () => {
-    const plan = newCoursePlan(courseRoot, "typed javascript", outline);
+    const plan = newCoursePlan(planRoot, "typed javascript", outline);
     expect(plan.version).toBe(1);
     expect(plan.createdAt).toBeGreaterThan(0);
     expect(plan.modules).toEqual([
@@ -247,15 +270,15 @@ describe("course plan checkpoint file", () => {
     ]);
 
     saveCoursePlan(plan);
-    const loaded = loadCoursePlan(courseRoot);
+    const loaded = loadCoursePlan(planRoot);
     expect(loaded).not.toBeNull();
     if (!loaded) throw new Error("expected a plan file after save");
-    expect(loaded).toMatchObject({ version: 1, courseRoot, prompt: "typed javascript", outline });
+    expect(loaded).toMatchObject({ version: 1, courseRoot: planRoot, prompt: "typed javascript", outline });
     expect(loaded.modules).toEqual(plan.modules);
   });
 
   test("markModule updates a module and persists the change", () => {
-    const plan = newCoursePlan(courseRoot, "typed javascript", outline);
+    const plan = newCoursePlan(planRoot, "typed javascript", outline);
     saveCoursePlan(plan);
 
     markModule(plan, "01", { status: "drafted", dir: "modules/01" });
@@ -263,14 +286,14 @@ describe("course plan checkpoint file", () => {
     expect(plan.modules[0]).toMatchObject({ id: "01", status: "drafted", dir: "modules/01" });
     expect(plan.modules[1]).toMatchObject({ id: "02", status: "failed", error: "authoring crashed" });
 
-    const loaded = loadCoursePlan(courseRoot);
+    const loaded = loadCoursePlan(planRoot);
     if (!loaded) throw new Error("expected a plan file after markModule");
     expect(loaded.modules[0]).toMatchObject({ id: "01", status: "drafted", dir: "modules/01" });
     expect(loaded.modules[1]).toMatchObject({ id: "02", status: "failed", error: "authoring crashed" });
 
     // Unknown ids are a no-op: nothing is persisted.
     markModule(plan, "99", { status: "failed" });
-    expect(loadCoursePlan(courseRoot)?.modules[0].status).toBe("drafted");
+    expect(loadCoursePlan(planRoot)?.modules[0].status).toBe("drafted");
   });
 
   test("loadCoursePlan on a missing directory returns null", () => {

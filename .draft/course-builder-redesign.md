@@ -1,7 +1,10 @@
 # Course-Builder Redesign — research notes
 
-Status: research draft (no code changed). Grounded in this repo's real code and
-the failures observed live this session (2026-08-04, v0.1.0 → v0.2.0).
+Status: research draft → **P0 (Option A) landed 2026-08-05** on `feat/pi-migration`
+(research → `.lyceum/research.json`, plan → `.lyceum/outline.json`, both via
+`write_file`; `submit_findings`/`submit_outline` deleted). Remaining phases P1
+(test-verified status, parallel authoring, health beacon ✓ already shipped via
+stash), P2 (hybrid fallback, per-file resume, plan.md) not started.
 
 ## TL;DR
 

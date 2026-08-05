@@ -117,13 +117,19 @@ replacement or build windowing/scroll-offset behavior by hand; reimplement
 its own soak period. No code dependency on P1–P3, but a real port — don't treat as
 low-risk or do-whenever.
 
-## P5 — Transport-reliability fix (after P0–P3 green)
+## P5 — Transport-reliability fix ✅ (next commit after 665d400)
 
-Revisit file-based/hybrid-fallback handoffs (`.draft/course-builder-redesign.md`
-P0) on the new SDK: validator errors give the retry loop precise structured reasons
-(a) instead of hand-rolled `reportErrors`/`outlineErrors`; per-tool `AbortSignal`
-(b) gives a real per-call timeout for failure #7 (health beacon / configurable
-timeout).
+Option A (file-based stage handoffs, `.draft/course-builder-redesign.md` P0)
+landed on the new SDK: research writes `.lyceum/research.json`, plan writes
+`.lyceum/outline.json` via `write_file`; `submit_findings`/`submit_outline` +
+closure-capture deleted. The stage reads + validates the artifact and retries
+once with corrective notes naming the exact validation problems (structured
+reasons — the old hand-rolled validators remain as the file-content checks).
+Failure #7 mitigations shipped earlier: health beacons + visible readline
+prompt (stash landing on main), configurable request timeout
+(`TUTOR_REQUEST_TIMEOUT_MS`, P1). Still deferred from the redesign doc's P1/P2:
+D (parallel authoring), E (test-verified module status), C (hybrid fallback),
+F (per-file resume), G (plan.md).
 
 ## Sequencing & rollback
 

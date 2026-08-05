@@ -1,6 +1,13 @@
+// Research stage: gather sourced facts about the topic and land them in
+// `.lyceum/research.json` via write_file (Option A — file-based handoff, see
+// .draft/course-builder-redesign.md). Tool-call ARGUMENT transport is the
+// fragile channel (chunking, stripped args, truncation); the file channel
+// persists, is inspectable, and survives crashes. The stage reads + validates
+// the file after the run and retries once with corrective notes.
 import { Agent } from "@earendil-works/pi-agent-core";
-import { Type } from "@earendil-works/pi-ai";
-import { jsonResult, type PiAgentTool } from "@tutor/core";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { buildAuthorTools, type PiAgentTool } from "@tutor/core";
 import { buildModel, buildStreamFn, type ProviderSelection } from "@tutor/llms";
 import type { ResearchFinding, ResearchReport } from "./pipeline-types";
 import { attachPiBridge, lastAssistantText } from "./pi-events";
@@ -9,30 +16,33 @@ import { progressLogger } from "./progress";
 export interface ResearchOptions {
   provider: ProviderSelection;
   prompt: string;
+  /** Course root; the report lands at `<courseRoot>/.lyceum/research.json`. */
+  courseRoot: string;
   webSearchTool: PiAgentTool;
   /** Stream the model's reasoning/text and log tool calls to stdout. */
   progress?: boolean;
 }
 
 const MAX_RESEARCH_ITERATIONS = 12;
+const RESEARCH_FILE = join(".lyceum", "research.json");
 
 function buildResearchPrompt(): string {
   return [
     "You are a research assistant for course authoring. Use the web_search tool to gather CURRENT, sourced facts about the course topic in your task (official docs, best practices, current API shapes).",
-    "Search as many times as you need. When done, call submit_findings ONCE with the report: every finding MUST have",
-    'a claim and a source_url of the page supporting it; if results are thin or conflicting, say so in caveats.',
-    'Never invent a source_url. After submit_findings, reply "done".',
+    "Search as many times as you need. When done, write your findings to .lyceum/research.json using the write_file tool: a JSON object { findings: [{ claim, source_url, note? }], caveats? }.",
+    "Every finding MUST have a claim and a source_url of the page supporting it; if results are thin or conflicting, say so in caveats.",
+    "Never invent a source_url. After writing the file, reply with a one-line summary.",
   ].join(" ");
 }
 
 /**
- * Validation errors for a submit_findings payload; null when the payload is a
+ * Validation errors for a research.json payload; null when the payload is a
  * valid report. Each entry names the exact field problem so a corrective retry
  * (and the final CLI error) can tell the model what to fix.
  */
 export function reportErrors(input: unknown): string[] | null {
   if (typeof input !== "object" || input === null) {
-    return ["submit_findings arguments were not a JSON object"];
+    return ["research.json content was not a JSON object"];
   }
   const record = input as Record<string, unknown>;
   if (!Array.isArray(record.findings)) {
@@ -62,10 +72,10 @@ export function reportErrors(input: unknown): string[] | null {
 }
 
 /**
- * Hand-rolled shape guard for the researcher's forced tool-call payload.
- * `findings` must be an array of objects each with a non-empty string `claim`
- * and a string `source_url` (optional string `note`); `caveats` is an optional
- * string. An empty findings array is valid. Anything else -> null.
+ * Shape guard for the research.json payload. `findings` must be an array of
+ * objects each with a non-empty string `claim` and a string `source_url`
+ * (optional string `note`); `caveats` is an optional string. An empty
+ * findings array is valid. Anything else -> null.
  */
 export function parseReport(input: unknown): ResearchReport | null {
   if (reportErrors(input)) return null;
@@ -84,53 +94,41 @@ export function parseReport(input: unknown): ResearchReport | null {
   return report;
 }
 
-/**
- * The researcher's only output channel: stashes the model's VALIDATED
- * arguments in a closure so the stage can read them after the run. The pi
- * loop validates the TypeBox schema before execute runs, so a malformed
- * payload never reaches the tool; its error is fed back to the model.
- * `terminate: true` ends the run right after the batch, like the old
- * completesRun lifecycle.
- */
-const submitFindingsParams = Type.Object({
-  findings: Type.Array(
-    Type.Object({
-      claim: Type.String(),
-      source_url: Type.String(),
-      note: Type.Optional(Type.String()),
-    }),
-  ),
-  caveats: Type.Optional(Type.String()),
-});
-
-function createSubmitFindingsTool(): { tool: PiAgentTool<typeof submitFindingsParams>; captured: () => unknown } {
-  let captured: unknown;
-  const tool: PiAgentTool<typeof submitFindingsParams> = {
-    name: "submit_findings",
-    label: "Submit the research report",
-    description: "Submit the research report. The ONLY way to deliver your findings.",
-    parameters: submitFindingsParams,
-    execute: async (_toolCallId, params) => {
-      captured = params;
-      return { ...jsonResult({ ok: true }), terminate: true };
-    },
-  };
-  return { tool, captured: () => captured };
+/** Read + parse the stage file; distinguish missing vs unreadable vs invalid JSON. */
+async function readStageFile(
+  courseRoot: string,
+  file: string,
+): Promise<{ payload: unknown; parseError: string | null; hadFile: boolean }> {
+  let raw: string;
+  try {
+    raw = await readFile(join(courseRoot, file), "utf8");
+  } catch {
+    return { payload: undefined, parseError: null, hadFile: false };
+  }
+  try {
+    return { payload: JSON.parse(raw) as unknown, parseError: null, hadFile: true };
+  } catch (err) {
+    return {
+      payload: undefined,
+      parseError: `not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      hadFile: true,
+    };
+  }
 }
 
-/** One full agent run; resolves to the capture outcome after the run. */
+/** One full agent run; resolves to the file outcome after the run. */
 async function attempt(
   opts: ResearchOptions,
   prompt: string,
-): Promise<{ report: ResearchReport | null; called: boolean; payload: unknown; outputText: string }> {
-  const { tool: submitFindingsTool, captured } = createSubmitFindingsTool();
+): Promise<{ report: ResearchReport | null; payload: unknown; parseError: string | null; hadFile: boolean; outputText: string }> {
+  const { write_file } = buildAuthorTools({ courseRoot: opts.courseRoot, modules: [] });
   const agent = new Agent({
     streamFn: buildStreamFn(opts.provider),
     initialState: {
       systemPrompt: buildResearchPrompt(),
       model: buildModel(opts.provider),
       thinkingLevel: "off",
-      tools: [opts.webSearchTool, submitFindingsTool],
+      tools: [opts.webSearchTool, write_file],
     },
   });
   const bridge = attachPiBridge(agent, {
@@ -143,16 +141,11 @@ async function attempt(
     const error = agent.state.errorMessage;
     if (error) throw new Error(error ?? "research run failed");
   }
-  const payload = captured();
-  return {
-    report: parseReport(payload),
-    called: payload !== undefined,
-    payload,
-    outputText: lastAssistantText(agent),
-  };
+  const { payload, parseError, hadFile } = await readStageFile(opts.courseRoot, RESEARCH_FILE);
+  return { report: parseReport(payload), payload, parseError, hadFile, outputText: lastAssistantText(agent) };
 }
 
-/** A one-line sketch of the payload for the final CLI error. */
+/** A one-line sketch of the file payload for the final CLI error. */
 function sketch(payload: unknown): string {
   try {
     const s = JSON.stringify(payload);
@@ -162,32 +155,31 @@ function sketch(payload: unknown): string {
   }
 }
 
+/** All validation/parse problems in a written file, for the retry note. */
+function fileErrors(payload: unknown, parseError: string | null): string[] {
+  if (parseError) return [parseError];
+  return reportErrors(payload) ?? [];
+}
+
 /**
  * Runs the research stage: gathers sourced facts about the topic and returns
  * them as a validated ResearchReport. Retries ONCE with a corrective prompt
  * that names the exact validation problems; a second failure throws with the
- * reason (never called vs invalid payload) and the model's last text.
+ * reason (file never written vs invalid content) and the model's last text.
  */
 export async function runResearch(opts: ResearchOptions): Promise<ResearchReport> {
   const first = await attempt(opts, opts.prompt);
   if (first.report) return first.report;
 
-  const errors = first.called ? reportErrors(first.payload) : null;
-  const note = errors
-    ? `\n\nYour previous submit_findings call was invalid:\n- ${errors.join("\n- ")}\nFix those fields and call submit_findings once with a valid report.`
-    : "\n\nYour previous reply did not call submit_findings. Call submit_findings once with a valid report ({ findings: [{ claim, source_url }] }).";
+  const firstErrors = fileErrors(first.payload, first.parseError);
+  const note = firstErrors.length
+    ? `\n\nYour previous .lyceum/research.json was invalid:\n- ${firstErrors.join("\n- ")}\nFix those fields and write the file again with a valid report.`
+    : "\n\nYour previous reply did not write .lyceum/research.json. Write it once via write_file with a valid report ({ findings: [{ claim, source_url }] }).";
   const retry = await attempt(opts, `${opts.prompt}${note}`);
   if (retry.report) return retry.report;
 
-  const emptyArgs =
-    retry.called &&
-    typeof retry.payload === "object" &&
-    retry.payload !== null &&
-    Object.keys(retry.payload as object).length === 0;
-  const why = retry.called
-    ? `submit_findings payload still invalid: ${(reportErrors(retry.payload) ?? []).join("; ")} (payload: ${sketch(retry.payload)})`
-    : `the model finished without calling submit_findings; last output: ${JSON.stringify(retry.outputText.slice(0, 200))}`;
-  throw new Error(
-    `Research stage failed: ${why}${emptyArgs ? " — submit_findings arrived with empty arguments; your provider may be stripping tool-call arguments" : ""}`,
-  );
+  const why = retry.hadFile
+    ? `research.json is still invalid: ${fileErrors(retry.payload, retry.parseError).join("; ")} (file: ${sketch(retry.payload)})`
+    : `the model finished without writing .lyceum/research.json; last output: ${JSON.stringify(retry.outputText.slice(0, 200))}`;
+  throw new Error(`Research stage failed: ${why}`);
 }
