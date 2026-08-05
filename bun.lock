@@ -45,6 +45,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@cline/shared": "0.0.69",
+        "@earendil-works/pi-ai": "0.83.0",
         "@inquirer/prompts": "8.5.2",
         "@tutor/shared": "*",
       },

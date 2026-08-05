@@ -1,5 +1,6 @@
 import { createAgentRuntime, type AgentRuntimeConfig } from "@cline/agents";
 import { createTool, type AgentTool } from "@cline/shared";
+import { toClineTool, type PiAgentTool } from "@tutor/core";
 import { buildModel, type ProviderSelection } from "@tutor/llms";
 import type { ResearchFinding, ResearchReport } from "./pipeline-types";
 import { progressLogger } from "./progress";
@@ -7,7 +8,7 @@ import { progressLogger } from "./progress";
 export interface ResearchOptions {
   provider: ProviderSelection;
   prompt: string;
-  webSearchTool: AgentTool<{ query: string }, unknown>;
+  webSearchTool: PiAgentTool;
   /** Stream the model's reasoning/text and log tool calls to stdout. */
   progress?: boolean;
 }
@@ -129,7 +130,7 @@ async function attempt(
   const runtime = createAgentRuntime({
     model: buildModel(opts.provider),
     systemPrompt: buildResearchPrompt(),
-    tools: [opts.webSearchTool, submitFindingsTool],
+    tools: [toClineTool(opts.webSearchTool), submitFindingsTool],
     maxIterations: MAX_RESEARCH_ITERATIONS,
     hooks: opts.progress ? { onEvent: progressLogger("research") } : undefined,
   } satisfies AgentRuntimeConfig);

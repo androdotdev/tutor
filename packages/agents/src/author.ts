@@ -2,7 +2,7 @@ import { createAgentRuntime, type AgentRuntimeConfig } from "@cline/agents";
 import type { AgentRuntimeEvent } from "@cline/shared";
 import type { ModuleDesc } from "@tutor/shared";
 import { buildModel, type ProviderSelection } from "@tutor/llms";
-import { buildAuthorTools } from "@tutor/core";
+import { buildAuthorTools, toClineTool } from "@tutor/core";
 
 /** Author-mode policy: how the agent writes a module the way an engineer would. */
 export function buildAuthorPrompt(module: ModuleDesc, opts?: { hasPolish?: boolean }): string {
@@ -59,10 +59,10 @@ export function createAuthorSession(opts: AuthorSessionOptions): AuthorSession {
     model: buildModel(opts.provider),
     systemPrompt: buildAuthorPrompt(opts.module, { hasPolish: !!opts.extraTools?.length }),
     tools: [
-      baseTools.run_tests,
-      baseTools.read_file,
-      baseTools.write_file,
-      baseTools.web_search,
+      toClineTool(baseTools.run_tests),
+      toClineTool(baseTools.read_file),
+      toClineTool(baseTools.write_file),
+      toClineTool(baseTools.web_search),
       ...(opts.extraTools ?? []),
     ],
     maxIterations: opts.maxIterations ?? 16,

@@ -3,6 +3,7 @@ import { buildModel, type ProviderSelection } from "@tutor/llms";
 import {
   createAskUserTool,
   defaultPromptLine,
+  toClineTool,
   type AskUserFn,
   type AskUserQA,
 } from "@tutor/core";
@@ -35,7 +36,7 @@ export async function runClarify(opts: ClarifyOptions): Promise<ClarifyResult> {
   const runtime = createAgentRuntime({
     model: buildModel(opts.provider),
     systemPrompt: buildClarifyPrompt(),
-    tools: [tool],
+    tools: [toClineTool(tool)],
     maxIterations: MAX_CLARIFY_ITERATIONS,
     hooks: opts.progress ? { onEvent: progressLogger("clarify") } : undefined,
   } satisfies AgentRuntimeConfig);

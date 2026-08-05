@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { isSpoiler, type ModuleDesc } from "@tutor/shared";
 import { buildModel, type ProviderSelection } from "@tutor/llms";
-import { buildTools } from "@tutor/core";
+import { buildTools, toClineTool } from "@tutor/core";
 import { buildSystemPrompt, type ModuleContext } from "./policy";
 
 /** Per-file cap for context injected into the prompt. */
@@ -124,7 +124,7 @@ export function createTutorSession(opts: TutorSessionOptions): TutorSession {
   const runtime = createAgentRuntime({
     model: buildModel(opts.provider),
     systemPrompt: buildSystemPrompt(opts.module, buildModuleContext(opts.courseRoot, opts.module), opts.userPrompt),
-    tools: [baseTools.run_tests, baseTools.read_file, baseTools.grep],
+    tools: [toClineTool(baseTools.run_tests), toClineTool(baseTools.read_file), toClineTool(baseTools.grep)],
     maxIterations: opts.maxIterations ?? 8,
     initialMessages: initialMessages.length ? initialMessages : undefined,
   } satisfies AgentRuntimeConfig);

@@ -1,6 +1,7 @@
 import { input } from "@inquirer/prompts";
-import { createTool } from "@cline/shared";
+import { Type, type Static } from "@earendil-works/pi-ai";
 import { createInterface } from "node:readline/promises";
+import { jsonResult, type PiAgentTool } from "./pi-tool";
 
 /** Prompts the human for one line of input and returns their answer. */
 export type AskUserFn = (question: string) => Promise<string>;
@@ -14,6 +15,7 @@ export interface AskUserQA {
 /**
  * Shown when a model calls ask_user without a question (some models send
  * `{}`). Never block on stdin with a blank prompt.
+ * P3 (validation live in the pi loop) deletes this entire fallback path.
  */
 export const FALLBACK_QUESTION = "What else should I know about the course you want?";
 
@@ -59,6 +61,8 @@ export function defaultPromptLine(): AskUserFn {
   };
 }
 
+const askUserParams = Type.Object({ question: Type.String() });
+
 /**
  * The clarify stage's only tool: asks the human ONE clarifying question.
  * Every invocation stashes the question/answer pair in a closure; `getQA()`
@@ -67,21 +71,23 @@ export function defaultPromptLine(): AskUserFn {
  * Bounds: at most `MAX_ASK_USER_CALLS` invocations (the 4th+ throws, which
  * the runtime feeds back to the model as a tool error, forcing a recap).
  * Missing/empty `question` args fall back to a topic-aware prompt so a model
- * that sends `{}` can never hang the terminal on a blank line.
+ * that sends `{}` can never hang the terminal on a blank line. The schema
+ * marks `question` required (final state); with the pi loop's validation live
+ * (P3) the runtime guard below is deleted along with the fallback helpers.
  */
-export function createAskUserTool(promptLine: AskUserFn, topic?: string) {
+export function createAskUserTool(
+  promptLine: AskUserFn,
+  topic?: string,
+): { tool: PiAgentTool<typeof askUserParams>; getQA: () => AskUserQA[] } {
   const qa: AskUserQA[] = [];
   let calls = 0;
-  const tool = createTool({
+  const tool: PiAgentTool<typeof askUserParams> = {
     name: "ask_user",
+    label: "Ask the human a clarifying question",
     description:
       "Ask the human ONE clarifying question about the course they want. Use sparingly (0-3 total); always pass the question text in the question argument, never empty.",
-    inputSchema: {
-      type: "object",
-      properties: { question: { type: "string" } },
-      required: ["question"],
-    },
-    execute: async (input: { question?: string }) => {
+    parameters: askUserParams,
+    execute: async (_toolCallId, input: Static<typeof askUserParams>) => {
       if (calls >= MAX_ASK_USER_CALLS) {
         throw new Error(
           `You already asked the maximum of ${MAX_ASK_USER_CALLS} clarifying questions. Do not call ask_user again; reply with your recap paragraph now.`,
@@ -90,13 +96,12 @@ export function createAskUserTool(promptLine: AskUserFn, topic?: string) {
       calls++;
       const asked = input?.question;
       const question =
-        typeof asked === "string" && asked.trim() !== ""
-          ? asked
-          : fallbackQuestion(topic, qa.length);
+        typeof asked === "string" && asked.trim() !== "" ? asked : fallbackQuestion(topic, qa.length);
       const answer = await promptLine(question);
       qa.push({ question, answer });
-      return { ok: true, answer };
+      const result = { ok: true, answer };
+      return jsonResult(result);
     },
-  });
+  };
   return { tool, getQA: () => qa.slice() };
 }

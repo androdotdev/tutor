@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
-import { createTool } from "@cline/shared";
+import { Type, type Static } from "@earendil-works/pi-ai";
 import { isSpoiler, REDACTED_MESSAGE, type ModuleDesc } from "@tutor/shared";
 import { join, dirname, basename, relative, sep } from "node:path";
 import { mkdir, readFile, realpath, readdir, writeFile } from "node:fs/promises";
 import { existsSync, lstatSync, statSync } from "node:fs";
 import { searchWeb, type SearchFn } from "./web-search";
+import { jsonResult, type PiAgentTool } from "./pi-tool";
 import type { TutorContext } from "./types";
 
 const MAX_OUTPUT = 60_000; // chars of test output relayed to the model
@@ -49,80 +50,89 @@ function runCommand(cwd: string, cmd: string, args: string[]): Promise<{ code: n
   });
 }
 
+const runTestsParams = Type.Object({ module: Type.String() });
+
 export function buildTools(ctx: TutorContext) {
   const courseRoot = ctx.courseRoot;
   const modules = ctx.modules;
 
-  const run_tests = createTool({
+  const run_tests: PiAgentTool<typeof runTestsParams> = {
     name: "run_tests",
+    label: "Run the module test suite",
     description:
       "Run the course module's test suite (spawns `bun test`). The ONLY referee: relay its output verbatim to the student. Input `module` is a module id, directory name, or title. Returns the tail of test output.",
-    inputSchema: { type: "object", properties: { module: { type: "string" } }, required: ["module"] },
-    execute: async (input: { module?: string }) => {
+    parameters: runTestsParams,
+    execute: async (_toolCallId, input: Static<typeof runTestsParams>) => {
       const target = input.module?.trim() ?? "";
       const module = modules.find(
         (m) => m.dir === target || m.id === target || m.title.toLowerCase() === target.toLowerCase(),
       );
-      if (!module) return { ok: false, out: `no module matches "${target}"` };
-      if (!module.testTargets.length) return { ok: false, out: `module ${module.dir} has no test targets` };
+      if (!module) return jsonResult({ ok: false, out: `no module matches "${target}"` });
+      if (!module.testTargets.length) return jsonResult({ ok: false, out: `module ${module.dir} has no test targets` });
       const { code, out } = await runCommand(courseRoot, "bun", ["test", ...module.testTargets]);
-      return { ok: code === 0, module: module.dir, exitCode: code, out };
+      return jsonResult({ ok: code === 0, module: module.dir, exitCode: code, out });
     },
-  });
+  };
 
-  const read_file = createTool({
+  const readFileParams = Type.Object({ path: Type.String() });
+
+  const read_file: PiAgentTool<typeof readFileParams> = {
     name: "read_file",
+    label: "Read a course file",
     description:
       "Read a course file (module README, exercise stub, or test) into context so you can help. `path` is relative to the course root. Files under solutions/ and project solution stubs are permanently redacted.",
-    inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
-    execute: async (input: { path: string }) => {
+    parameters: readFileParams,
+    execute: async (_toolCallId, input: Static<typeof readFileParams>) => {
       const courseRoot = rootOf(ctx.courseRoot);
       const abs = join(courseRoot, input.path);
-      if (!withinRoot(courseRoot, abs)) return escapes();
+      if (!withinRoot(courseRoot, abs)) return jsonResult(escapes());
       // Lexical gate: solutions dirs + project solution stubs (covers both layouts).
-      if (isSpoiler(courseRoot, abs) || underSolutionPath(ctx.modules, abs)) return redacted();
+      if (isSpoiler(courseRoot, abs) || underSolutionPath(ctx.modules, abs)) return jsonResult(redacted());
       // Symlink-hardening: re-check the fully resolved path, which may point
       // outside the course or at a spoiler (e.g. exercises/peek.js -> solutions/).
       let real: string;
       try {
         real = await realpath(abs);
       } catch {
-        return { blocked: true, message: `no such file: ${input.path}` };
+        return jsonResult({ blocked: true, message: `no such file: ${input.path}` });
       }
-      if (!withinRoot(courseRoot, real)) return escapes();
-      if (isSpoiler(courseRoot, real) || underSolutionPath(ctx.modules, real)) return redacted();
+      if (!withinRoot(courseRoot, real)) return jsonResult(escapes());
+      if (isSpoiler(courseRoot, real) || underSolutionPath(ctx.modules, real)) return jsonResult(redacted());
       let st: ReturnType<typeof statSync>;
       try {
         st = statSync(real);
       } catch {
-        return { blocked: true, message: `cannot read: ${input.path}` };
+        return jsonResult({ blocked: true, message: `cannot read: ${input.path}` });
       }
-      if (!st.isFile()) return { blocked: true, message: `${input.path} is not a file` };
+      if (!st.isFile()) return jsonResult({ blocked: true, message: `${input.path} is not a file` });
       const raw = await readFile(real, "utf8");
-      return {
+      return jsonResult({
         path: input.path,
         bytes: st.size,
         content: raw.length > MAX_FILE ? raw.slice(0, MAX_FILE) + "\n…[truncated]" : raw,
-      };
+      });
     },
-  });
+  };
 
   /** Max grep hits relayed to the model. */
   const MAX_GREP_MATCHES = 30;
   /** Max chars of a matched line relayed to the model. */
   const MAX_GREP_LINE = 200;
 
-  const grep = createTool({
+  const grepParams = Type.Object({ pattern: Type.String() });
+
+  const grep: PiAgentTool<typeof grepParams> = {
     name: "grep",
+    label: "Search the course",
     description:
       "Search the course (modules + root files) for a regex pattern; returns up to 30 matches as `file:line: text`. Solutions/ and project solution stubs are never searched. Use it to find where something is defined or mentioned without reading whole files.",
-    inputSchema: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] },
-    execute: async (input: { pattern: string }) => {
+    parameters: grepParams,
+    execute: async (_toolCallId, input: Static<typeof grepParams>) => {
       let re: RegExp;
       try {
         re = new RegExp(input.pattern, "i");
       } catch (err) {
-        return { ok: false, message: `invalid regex: ${(err as Error).message}` };
+        return jsonResult({ ok: false, message: `invalid regex: ${(err as Error).message}` });
       }
       const courseRoot = rootOf(ctx.courseRoot);
       const matches: string[] = [];
@@ -173,80 +183,86 @@ export function buildTools(ctx: TutorContext) {
         }
       };
       await walk(courseRoot);
-      return {
+      return jsonResult({
         ok: true,
         pattern: input.pattern,
         matches: matches.length ? matches : ["no matches (solutions/ is never searched)"],
-      };
+      });
     },
-  });
+  };
 
   const MAX_SKILL = 8_000; // chars of a skill's content relayed to the model
 
-  const list_skills = createTool({
+  const listSkillsParams = Type.Object({});
+
+  const list_skills: PiAgentTool<typeof listSkillsParams> = {
     name: "list_skills",
+    label: "List available skills",
     description:
       "List the learner's available skills by name (names only — content is loaded on demand). Returns [] when no skills directory is configured.",
-    inputSchema: { type: "object", properties: {} },
+    parameters: listSkillsParams,
     execute: async () => {
-      if (!ctx.skillsDir) return { ok: true, skills: [] };
+      if (!ctx.skillsDir) return jsonResult({ ok: true, skills: [] });
       let entries: string[];
       try {
         entries = await readdir(ctx.skillsDir);
       } catch {
-        return { ok: true, skills: [] }; // missing/unreadable dir: no skills
+        return jsonResult({ ok: true, skills: [] }); // missing/unreadable dir: no skills
       }
-      return {
+      return jsonResult({
         ok: true,
         skills: entries.filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3)).sort(),
-      };
+      });
     },
-  });
+  };
 
-  const get_skill = createTool({
+  const getSkillParams = Type.Object({ name: Type.String() });
+
+  const get_skill: PiAgentTool<typeof getSkillParams> = {
     name: "get_skill",
+    label: "Load one skill's content",
     description:
       "Load ONE user skill's content by name (from list_skills). Only the requested skill is read; content is capped. Use it when a skill would genuinely change how you teach this session.",
-    inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
-    execute: async (input: { name: string }) => {
-      if (!ctx.skillsDir) return { ok: false, message: "no skills directory configured" };
+    parameters: getSkillParams,
+    execute: async (_toolCallId, input: Static<typeof getSkillParams>) => {
+      if (!ctx.skillsDir) return jsonResult({ ok: false, message: "no skills directory configured" });
       const name = input.name.trim();
       // Plain filename only: no separators, no traversal, no dots-only names.
       if (!name || name.includes("/") || name.includes("\\") || name === "." || name === "..") {
-        return { ok: false, message: "invalid skill name" };
+        return jsonResult({ ok: false, message: "invalid skill name" });
       }
       let entries: string[];
       try {
         entries = await readdir(ctx.skillsDir);
       } catch {
-        return { ok: false, message: `no skills directory at ${ctx.skillsDir}` };
+        return jsonResult({ ok: false, message: `no skills directory at ${ctx.skillsDir}` });
       }
       const target = entries.find((f) => f.toLowerCase() === `${name.toLowerCase()}.md`);
-      if (!target) return { ok: false, message: `no skill named "${name}"` };
+      if (!target) return jsonResult({ ok: false, message: `no skill named "${name}"` });
       // Resolve and re-check: a symlinked skill file must stay inside the dir.
       const abs = join(ctx.skillsDir, target);
       let real: string;
       try {
         real = await realpath(abs);
       } catch {
-        return { ok: false, message: `cannot read skill "${name}"` };
+        return jsonResult({ ok: false, message: `cannot read skill "${name}"` });
       }
       if (!withinRoot(rootOf(ctx.skillsDir), real)) {
-        return { blocked: true, message: "skill path escapes the skills directory" };
+        return jsonResult({ blocked: true, message: "skill path escapes the skills directory" });
       }
       let text: string;
       try {
         text = await readFile(real, "utf8");
       } catch {
-        return { ok: false, message: `cannot read skill "${name}"` };
+        return jsonResult({ ok: false, message: `cannot read skill "${name}"` });
       }
-      return {
+      return jsonResult({
         ok: true,
         name,
         content: text.length > MAX_SKILL ? `${text.slice(0, MAX_SKILL)}\n…(truncated)` : text,
-      };
+      });
     },
-  });
+  };
 
   return { run_tests, read_file, grep, list_skills, get_skill };
 }
@@ -261,12 +277,15 @@ export function buildAuthorTools(ctx: TutorContext, deps: { search?: SearchFn } 
   const { run_tests, read_file, grep } = buildTools(ctx);
   const search = deps.search ?? searchWeb;
 
-  const web_search = createTool({
+  const webSearchParams = Type.Object({ query: Type.String() });
+
+  const web_search: PiAgentTool<typeof webSearchParams> = {
     name: "web_search",
+    label: "Search the web",
     description:
       "Search the web (no API key) for up to 5 results: title, URL, snippet each. Use it to research module topics — official docs, best practices, examples. Results are EXTERNAL pages: never paste them into exercises or README; write original content informed by them.",
-    inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
-    execute: async (input: { query: string }) => {
+    parameters: webSearchParams,
+    execute: async (_toolCallId, input: Static<typeof webSearchParams>) => {
       const query = typeof input?.query === "string" ? input.query.trim() : "";
       if (query === "") {
         // Some providers strip tool-call arguments entirely, so a model that
@@ -277,33 +296,42 @@ export function buildAuthorTools(ctx: TutorContext, deps: { search?: SearchFn } 
       }
       try {
         const results = await search(query);
-        return { ok: true, query, results };
+        return jsonResult({ ok: true, query, results });
       } catch (err) {
-        return { ok: false, message: `web search failed: ${err instanceof Error ? err.message : String(err)}` };
+        return jsonResult({
+          ok: false,
+          message: `web search failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
       }
     },
+  };
+
+  const writeFileParams = Type.Object({
+    path: Type.String(),
+    content: Type.String(),
   });
 
-  const write_file = createTool({
+  const write_file: PiAgentTool<typeof writeFileParams> = {
     name: "write_file",
+    label: "Create or overwrite a course file",
     description:
       "Create or overwrite a course file so you can author modules: README.md, exercise/index.js (stub), tests/index.test.js. `path` is relative to the course root. Never write to solutions/.",
-    inputSchema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] },
-    execute: async (input: { path: string; content: string }) => {
+    parameters: writeFileParams,
+    execute: async (_toolCallId, input: Static<typeof writeFileParams>) => {
       const courseRoot = rootOf(ctx.courseRoot);
       const abs = join(courseRoot, input.path);
-      if (!withinRoot(courseRoot, abs)) return escapes();
+      if (!withinRoot(courseRoot, abs)) return jsonResult(escapes());
       if (isSpoiler(courseRoot, abs) || underSolutionPath(ctx.modules, abs)) {
-        return { blocked: true, message: "writing to solutions/ is not allowed" };
+        return jsonResult({ blocked: true, message: "writing to solutions/ is not allowed" });
       }
       // Never write through a symlink: truncating a link would hit its target
       // (e.g. a solutions file), not the path the model asked for.
       try {
         if (existsSync(abs) && lstatSync(abs).isSymbolicLink()) {
-          return { blocked: true, message: "refusing to write through a symlink" };
+          return jsonResult({ blocked: true, message: "refusing to write through a symlink" });
         }
       } catch {
-        return { blocked: true, message: `cannot inspect: ${input.path}` };
+        return jsonResult({ blocked: true, message: `cannot inspect: ${input.path}` });
       }
       // Resolve the deepest existing ancestor so a symlinked intermediate dir
       // cannot redirect the write outside the course (or into solutions).
@@ -320,20 +348,20 @@ export function buildAuthorTools(ctx: TutorContext, deps: { search?: SearchFn } 
       try {
         realParent = await realpath(parent);
       } catch {
-        return { blocked: true, message: `cannot resolve parent: ${input.path}` };
+        return jsonResult({ blocked: true, message: `cannot resolve parent: ${input.path}` });
       }
-      if (!withinRoot(courseRoot, realParent)) return escapes();
+      if (!withinRoot(courseRoot, realParent)) return jsonResult(escapes());
       if (isSpoiler(courseRoot, realParent) || underSolutionPath(ctx.modules, realParent)) {
-        return { blocked: true, message: "writing to solutions/ is not allowed" };
+        return jsonResult({ blocked: true, message: "writing to solutions/ is not allowed" });
       }
       // Recreate the missing chain under the validated real parent.
       if (missing.length) {
         await mkdir(join(realParent, ...missing), { recursive: true });
       }
       await writeFile(abs, input.content, "utf8");
-      return { ok: true, path: input.path, bytes: input.content.length };
+      return jsonResult({ ok: true, path: input.path, bytes: input.content.length });
     },
-  });
+  };
 
   return { run_tests, read_file, write_file, grep, web_search };
 }
