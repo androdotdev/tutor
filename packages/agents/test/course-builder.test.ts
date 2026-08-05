@@ -19,6 +19,7 @@ let port = 0;
 // Each test installs its own scripted call sequence; the fetch handler just
 // increments the shared counter and delegates.
 let callCount = 0;
+let lastBodies: unknown[] = [];
 type Push = (o: unknown) => void;
 type Enc = (s: string) => void;
 let script: (call: number, push: Push, enc: Enc) => void = () => {};
@@ -28,7 +29,7 @@ beforeAll(async () => {
     port: 0,
     async fetch(req) {
       if (new URL(req.url).pathname !== "/v1/chat/completions") return new Response("nf", { status: 404 });
-      await req.json();
+      lastBodies.push(await req.json());
       callCount += 1;
 
       const chunk = (o: unknown) => `data: ${JSON.stringify(o)}\n\n`;
@@ -170,6 +171,18 @@ describe("buildCourse", () => {
         // the model wrote to course/module/... — outside modules/<dir>/. The
         // writes succeed (they're inside the course root); placement is wrong.
         installDraftScript("module");
+        // The watchdog continues the run after the text-only summary; give it
+        // one more text-only reply so the run ends cleanly and the placement
+        // verification (not a stream error) decides the outcome.
+        const baseScript = script;
+        script = (call, push, enc) => {
+          if (call === 4) {
+            push({ choices: [{ delta: { content: "I am done." } }] });
+            push({ choices: [{ delta: {}, finish_reason: "stop" }] });
+          } else {
+            baseScript(call, push, enc);
+          }
+        };
 
         const result = await buildCourse({
           provider: provider(),
@@ -193,6 +206,77 @@ describe("buildCourse", () => {
           modules: Array<{ id: string; status: string }>;
         };
         expect(plan.modules.find((m) => m.id === "01")?.status).toBe("failed");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
+  test(
+    "a text-only first reply is rescued: the run continues with a nudge and drafts the module",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "lyceum-rescue-"));
+      const courseRoot = join(root, "course");
+      try {
+        callCount = 0;
+        lastBodies = [];
+        const moduleDir = "modules/01-first-module";
+        script = (call, push) => {
+          if (call === 1) {
+            // The hy3 failure mode: analyze in prose, no tool calls. Without
+            // the watchdog this text-only turn ENDS the run with zero files.
+            push({ choices: [{ delta: { content: "Let me design this module first." } }] });
+            push({ choices: [{ delta: {}, finish_reason: "stop" }] });
+          } else if (call === 2) {
+            push({
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      WRITE(0, "w1", `${moduleDir}/tests/index.test.js`, TEST_SRC),
+                      WRITE(1, "w2", `${moduleDir}/exercise/index.js`, EXERCISE_SRC),
+                      WRITE(2, "w3", `${moduleDir}/README.md`, "# First Module"),
+                    ],
+                  },
+                },
+              ],
+            });
+            push({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+          } else if (call === 3) {
+            push({ choices: [{ delta: { tool_calls: [toolCall(0, "r1", "run_tests", { module: "01" })] } }] });
+            push({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+          } else if (call === 4) {
+            push({ choices: [{ delta: { content: "module 01 done" } }] });
+            push({ choices: [{ delta: {}, finish_reason: "stop" }] });
+          }
+        };
+
+        const result = await buildCourse({
+          provider: provider(),
+          courseRoot,
+          outline: { ...outline, modules: [outline.modules[0]] },
+          prompt: "build a mock course",
+        });
+
+        expect(result.drafted).toBe(1);
+        expect(result.failed).toHaveLength(0);
+
+        // The rescue nudge rode into the model's second request as a user message.
+        const secondBody = lastBodies[1] as { messages: Array<{ role: string; content: unknown }> };
+        const text = (m: { content: unknown }): string =>
+          Array.isArray(m.content)
+            ? m.content
+                .map((b) => (b && typeof b === "object" && "text" in b ? String((b as { text: unknown }).text) : ""))
+                .join("")
+            : String(m.content);
+        expect((secondBody.messages ?? []).map(text).join("\n")).toContain(
+          "You ended your reply without writing any files",
+        );
+
+        for (const f of ["tests/index.test.js", "exercise/index.js", "README.md"]) {
+          expect(existsSync(join(courseRoot, "modules", "01-first-module", f))).toBe(true);
+        }
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
