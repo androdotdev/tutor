@@ -64,7 +64,9 @@ export function createAuthorSession(opts: AuthorSessionOptions): AuthorSession {
     streamFn: buildStreamFn(opts.provider),
     initialState: {
       systemPrompt: buildAuthorPrompt(opts.module, { hasPolish: !!opts.extraTools?.length }),
-      model: buildModel(opts.provider),
+      // A reasoning model can spend the whole 4k budget on thinking; authoring
+      // needs room for thinking + the tool call that actually writes files.
+      model: { ...buildModel(opts.provider), maxTokens: 8_192 },
       thinkingLevel: "off",
       tools: [
         baseTools.run_tests,
@@ -82,26 +84,37 @@ export function createAuthorSession(opts: AuthorSessionOptions): AuthorSession {
   // turn (no tool calls) — a model that "answers" instead of acting ends the
   // run with zero files, which the build then fails. When the first such turn
   // arrives with no write_file call into this module yet, queue a follow-up
-  // user message so the run continues and the model gets one explicit chance
-  // to write the files instead of stopping.
+  // user message so the run continues and the model gets explicit chances to
+  // write the files instead of stopping. Fires on "length" too: a reasoning
+  // model (hy3) can burn the whole output budget on thinking and end with
+  // finish_reason "length" — no tool call ever arrives — which was the silent
+  // failure behind the consistently-empty modules. Up to MAX_RESCUES nudges;
+  // a model that still won't act after that fails loudly via verification.
   const base = `modules/${opts.module.dir}`;
+  const MAX_RESCUES = 3;
   let wroteInModule = false;
-  let rescued = false;
+  let rescues = 0;
 
   const bridge = attachPiBridge(agent, {
     maxIterations: opts.maxIterations ?? 24,
     onEvent: (event) => {
-      if (event.type === "assistant-message" && event.finishReason === "stop") {
-        if (!wroteInModule && !rescued) {
-          rescued = true;
+      if (
+        event.type === "assistant-message" &&
+        (event.finishReason === "stop" || event.finishReason === "length")
+      ) {
+        if (!wroteInModule && rescues < MAX_RESCUES) {
+          rescues += 1;
+          console.log(
+            `author watchdog: nudged the model to write files (finish=${event.finishReason}, rescue ${rescues}/${MAX_RESCUES})`,
+          );
           agent.followUp({
             role: "user",
             content: [
               {
                 type: "text",
-                text: `You ended your reply without writing any files. The task is NOT complete until you ` +
-                  `write ${base}/tests/index.test.js, ${base}/exercise/index.js and ${base}/README.md ` +
-                  `with the write_file tool. Write the test file FIRST, then the exercise stub, then the README.`,
+                text: `You ended your reply without writing any files (your output may have hit the token limit ` +
+                  `while thinking). STOP analyzing and call write_file NOW: write ${base}/tests/index.test.js ` +
+                  `first, then ${base}/exercise/index.js, then ${base}/README.md. The task fails without them.`,
               },
             ],
           });

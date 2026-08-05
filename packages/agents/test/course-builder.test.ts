@@ -171,12 +171,12 @@ describe("buildCourse", () => {
         // the model wrote to course/module/... — outside modules/<dir>/. The
         // writes succeed (they're inside the course root); placement is wrong.
         installDraftScript("module");
-        // The watchdog continues the run after the text-only summary; give it
-        // one more text-only reply so the run ends cleanly and the placement
+        // The watchdog rescues text-only turns up to 3 times; give it three
+        // more text-only replies so the run ends cleanly and the placement
         // verification (not a stream error) decides the outcome.
         const baseScript = script;
         script = (call, push, enc) => {
-          if (call === 4) {
+          if (call >= 4 && call <= 6) {
             push({ choices: [{ delta: { content: "I am done." } }] });
             push({ choices: [{ delta: {}, finish_reason: "stop" }] });
           } else {
@@ -276,6 +276,135 @@ describe("buildCourse", () => {
 
         for (const f of ["tests/index.test.js", "exercise/index.js", "README.md"]) {
           expect(existsSync(join(courseRoot, "modules", "01-first-module", f))).toBe(true);
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
+  test(
+    "a reply cut off by the output token limit (finish_reason length) is rescued like a text-only one",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "lyceum-length-"));
+      const courseRoot = join(root, "course");
+      try {
+        callCount = 0;
+        lastBodies = [];
+        const moduleDir = "modules/01-first-module";
+        script = (call, push) => {
+          if (call === 1) {
+            // The hy3 failure mode: the model burns its whole output budget on
+            // thinking and the stream ends with finish_reason "length" — no
+            // tool call ever arrives. The watchdog must still rescue it.
+            push({ choices: [{ delta: { content: "Let me think carefully about security hardening…" } }] });
+            push({ choices: [{ delta: {}, finish_reason: "length" }] });
+          } else if (call === 2) {
+            push({
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      WRITE(0, "w1", `${moduleDir}/tests/index.test.js`, TEST_SRC),
+                      WRITE(1, "w2", `${moduleDir}/exercise/index.js`, EXERCISE_SRC),
+                      WRITE(2, "w3", `${moduleDir}/README.md`, "# First Module"),
+                    ],
+                  },
+                },
+              ],
+            });
+            push({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+          } else if (call === 3) {
+            push({ choices: [{ delta: { content: "module 01 done" } }] });
+            push({ choices: [{ delta: {}, finish_reason: "stop" }] });
+          }
+        };
+
+        const result = await buildCourse({
+          provider: provider(),
+          courseRoot,
+          outline: { ...outline, modules: [outline.modules[0]] },
+          prompt: "build a mock course",
+        });
+
+        expect(result.drafted).toBe(1);
+        expect(result.failed).toHaveLength(0);
+        const secondBody = lastBodies[1] as { messages: Array<{ role: string; content: unknown }> };
+        const text = (m: { content: unknown }): string =>
+          Array.isArray(m.content)
+            ? m.content
+                .map((b) => (b && typeof b === "object" && "text" in b ? String((b as { text: unknown }).text) : ""))
+                .join("")
+            : String(m.content);
+        expect((secondBody.messages ?? []).map(text).join("\n")).toContain(
+          "You ended your reply without writing any files",
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
+  test(
+    "repeated text-only replies get up to three rescue nudges before the run ends",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "lyceum-multirescue-"));
+      const courseRoot = join(root, "course");
+      try {
+        callCount = 0;
+        lastBodies = [];
+        const moduleDir = "modules/01-first-module";
+        script = (call, push) => {
+          if (call === 1 || call === 2) {
+            // Two text-only replies in a row: each ends the run, each must be
+            // rescued again until the model finally acts.
+            push({ choices: [{ delta: { content: `still thinking, reply ${call}` } }] });
+            push({ choices: [{ delta: {}, finish_reason: "stop" }] });
+          } else if (call === 3) {
+            push({
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      WRITE(0, "w1", `${moduleDir}/tests/index.test.js`, TEST_SRC),
+                      WRITE(1, "w2", `${moduleDir}/exercise/index.js`, EXERCISE_SRC),
+                      WRITE(2, "w3", `${moduleDir}/README.md`, "# First Module"),
+                    ],
+                  },
+                },
+              ],
+            });
+            push({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+          } else if (call === 4) {
+            push({ choices: [{ delta: { content: "module 01 done" } }] });
+            push({ choices: [{ delta: {}, finish_reason: "stop" }] });
+          }
+        };
+
+        const result = await buildCourse({
+          provider: provider(),
+          courseRoot,
+          outline: { ...outline, modules: [outline.modules[0]] },
+          prompt: "build a mock course",
+        });
+
+        expect(result.drafted).toBe(1);
+        expect(result.failed).toHaveLength(0);
+        // Two nudges rode into requests 2 and 3.
+        const text = (m: { content: unknown }): string =>
+          Array.isArray(m.content)
+            ? m.content
+                .map((b) => (b && typeof b === "object" && "text" in b ? String((b as { text: unknown }).text) : ""))
+                .join("")
+            : String(m.content);
+        for (const body of [lastBodies[1], lastBodies[2]] as Array<{
+          messages: Array<{ role: string; content: unknown }>;
+        }>) {
+          expect((body.messages ?? []).map(text).join("\n")).toContain(
+            "You ended your reply without writing any files",
+          );
         }
       } finally {
         rmSync(root, { recursive: true, force: true });
