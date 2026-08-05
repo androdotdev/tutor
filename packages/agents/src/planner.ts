@@ -374,7 +374,7 @@ function sketchState(present: string[], errors: string[], outputText: string): s
 }
 
 /** Run the plan stage: at most one retry, then a text-outline rescue, then give up. */
-export async function planCourse(opts: PlanOptions): Promise<CourseOutline> {
+async function runPlanStage(opts: PlanOptions): Promise<CourseOutline> {
   const clamped = clampedCount(opts.moduleCountOverride);
   const systemPrompt = buildPlanSystemPrompt(clamped);
   const input = buildPlanInput(opts.prompt, opts.research);
@@ -408,4 +408,16 @@ export async function planCourse(opts: PlanOptions): Promise<CourseOutline> {
   }
 
   throw new Error(`Plan stage failed: ${sketchState(second.present, second.errors, second.outputText)}`);
+}
+
+/**
+ * Run the plan stage, then drop the per-module transport files. The assembled
+ * outline now lives in `outline.json` and the caller's `plan.json` checkpoint;
+ * `.lyceum/modules/` was delivery, not state — research.json, outline.json and
+ * plan.json are the final `.lyceum` contents.
+ */
+export async function planCourse(opts: PlanOptions): Promise<CourseOutline> {
+  const outline = await runPlanStage(opts);
+  await rm(join(opts.courseRoot, MODULES_DIR), { recursive: true, force: true });
+  return outline;
 }

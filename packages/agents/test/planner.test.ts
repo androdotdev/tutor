@@ -219,11 +219,10 @@ describe("planCourse", () => {
     const result = await planCourse({ provider: provider(), prompt: "http fundamentals", courseRoot });
 
     expect(result).toEqual(outline);
-    // The rescued outline is persisted module-wise on disk, like a file-written plan.
+    // The rescued outline was persisted stage-side, then the per-module
+    // transport files are cleaned up: only outline.json survives planCourse.
     expect(existsSync(join(courseRoot, ".lyceum", "outline.json"))).toBe(true);
-    for (const m of outline.modules) {
-      expect(existsSync(join(courseRoot, ".lyceum", "modules", `${m.id}.json`))).toBe(true);
-    }
+    expect(existsSync(join(courseRoot, ".lyceum", "modules"))).toBe(false);
   });
 
   test("throws when the model never writes files and its text has no outline", async () => {
