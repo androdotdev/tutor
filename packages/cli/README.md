@@ -104,7 +104,6 @@ debugging config precedence.
 | `OPENAI_BASE_URL` | Base URL for an OpenAI-compatible endpoint |
 | `TUTOR_MODEL` | Model id (default `gpt-4o-mini`, or `openrouter/free` on OpenRouter) |
 | `OLLAMA_HOST` | Ollama endpoint — implies the Ollama provider |
-| `LYCEUM_COURSE` | Course root (defaults to cwd, then `defaultCourse` from config) |
 | `XDG_CONFIG_HOME` | Config base dir (default `~/.config`) |
 
 Environment variables always win over the config file, key by key.

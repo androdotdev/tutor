@@ -66,7 +66,7 @@ Every module = README.md (teaching) + exercise/ (your stub) + tests/ (the grader
 
 Workflow: README → try it → run tests → Feynman. A final capstone lives in project/.
 
-Run: \`lyceum\` (set LYCEUM_COURSE to this directory) to tutor yourself through it.
+Run: \`lyceum\` from this directory to tutor yourself through it.
 `;
 }
 

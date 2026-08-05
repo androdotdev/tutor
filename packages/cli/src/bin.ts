@@ -30,7 +30,6 @@ const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.u
 const ENV_HELP = `env:
   OPENAI_API_KEY / OPENAI_BASE_URL   (or OLLAMA_HOST)  — the coach's brain
   TUTOR_MODEL                       — model override
-  LYCEUM_COURSE                     — course root override
 config (~/.config/lyceum/, env vars win):
   config.json                       — provider {apiKey,baseUrl,model} + defaultCourse
   system-prompt.md                  — coaching instructions appended to the policy
@@ -44,10 +43,10 @@ class CliError extends Error {
 }
 
 async function loadCourse(): Promise<{ courseRoot: string; modules: ModuleDesc[] }> {
-  // Precedence: LYCEUM_COURSE env > cwd discovery > XDG config defaultCourse.
-  const courseRoot = process.env.LYCEUM_COURSE ?? findCourseRoot(process.cwd()) ?? userConfig.defaultCourse;
+  // Precedence: cwd discovery (walk-up for a modules/ dir) > XDG config defaultCourse.
+  const courseRoot = findCourseRoot(process.cwd()) ?? userConfig.defaultCourse;
   if (!courseRoot) {
-    throw new CliError("no course root found (no ./modules directory). Set LYCEUM_COURSE.");
+    throw new CliError("no course root found (no ./modules directory). cd into the course or set defaultCourse in config.");
   }
   const modules = await resolveCourse(courseRoot);
   return { courseRoot, modules };
@@ -159,7 +158,7 @@ program
         );
         console.log(`course "${name}" scaffolded at ${targetDir}`);
         for (const m of created.modules) console.log(`  ${m.id}  ${m.title}`);
-        console.log(`Open it:  LYCEUM_COURSE=${targetDir} lyceum`);
+        console.log(`Open it:  cd ${targetDir} && lyceum`);
         return;
       }
 
@@ -233,7 +232,7 @@ program
       const result = await buildCourse({ provider, courseRoot: targetDir, outline, prompt, progress: true });
       printBuildSummary(result, outline.modules.length);
       if (result.failed.length) throw new CliError(`${result.failed.length} module(s) failed — re-run lyceum new to resume`);
-      console.log(`Open it:  LYCEUM_COURSE=${targetDir} lyceum`);
+      console.log(`Open it:  cd ${targetDir} && lyceum`);
     },
   );
 

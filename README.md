@@ -92,7 +92,6 @@ Resolution order: environment variables win, then the per-user config file.
 | `OPENAI_BASE_URL` | Base URL for an OpenAI-compatible endpoint |
 | `TUTOR_MODEL` | Model id |
 | `OLLAMA_HOST` | Ollama endpoint (implies the Ollama provider) |
-| `LYCEUM_COURSE` | Course root (defaults to cwd, then `defaultCourse` from config) |
 | `XDG_CONFIG_HOME` | Config base dir (default `~/.config`) |
 
 Per-user config lives in `~/.config/lyceum/` (or `$XDG_CONFIG_HOME/lyceum`):
