@@ -1,4 +1,5 @@
 import { Agent } from "@earendil-works/pi-agent-core";
+import { normalize } from "node:path";
 import type { ModuleDesc } from "@tutor/shared";
 import { buildModel, buildStreamFn, type ProviderSelection } from "@tutor/llms";
 import { buildAuthorTools, type PiAgentTool } from "@tutor/core";
@@ -98,8 +99,7 @@ export function createAuthorSession(opts: AuthorSessionOptions): AuthorSession {
             content: [
               {
                 type: "text",
-                text:
-                  `You ended your reply without writing any files. The task is NOT complete until you ` +
+                text: `You ended your reply without writing any files. The task is NOT complete until you ` +
                   `write ${base}/tests/index.test.js, ${base}/exercise/index.js and ${base}/README.md ` +
                   `with the write_file tool. Write the test file FIRST, then the exercise stub, then the README.`,
               },
@@ -108,7 +108,9 @@ export function createAuthorSession(opts: AuthorSessionOptions): AuthorSession {
         }
       } else if (event.type === "tool-started" && event.toolName === "write_file") {
         const path = (event.args as { path?: unknown } | undefined)?.path;
-        const norm = typeof path === "string" ? (path.startsWith("/") ? path.slice(1) : path) : "";
+        // Match canonical writes: normalize (collapses `//`, `.`, `..`) and
+        // drop any leading separator so absolute paths compare like relative.
+        const norm = normalize(typeof path === "string" ? path : "").replace(/^[/\\]+/, "");
         if (norm.startsWith(`${base}/`)) wroteInModule = true;
       }
       for (const listener of listeners) listener(event);
