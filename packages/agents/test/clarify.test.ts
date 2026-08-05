@@ -131,7 +131,7 @@ describe("runClarify", () => {
     expect(result.qa).toEqual([]);
   });
 
-  test("asks with the fallback question when the model calls ask_user empty", async () => {
+  test("rejects an empty ask_user payload before asking (pi validation), model recaps", async () => {
     mode = "empty";
     callCount = 0;
     const asked: string[] = [];
@@ -143,11 +143,11 @@ describe("runClarify", () => {
     const result = await runClarify({ provider, prompt: "learn Go", askUser });
 
     expect(result.recap).toBe("recap text");
-    expect(result.qa).toEqual([{ question: 'What else should I know about your "learn Go" course?', answer: "beginner" }]);
-    expect(asked).toEqual(['What else should I know about your "learn Go" course?']);
+    expect(result.qa).toEqual([]);
+    expect(asked).toEqual([]);
   });
 
-  test("empty-args fallback counts answers so repeated prompts are never identical", async () => {
+  test("empty ask_user payloads are rejected every time; the human is never prompted", async () => {
     mode = "empty2";
     callCount = 0;
     const asked: string[] = [];
@@ -159,14 +159,8 @@ describe("runClarify", () => {
     const result = await runClarify({ provider, prompt: "learn Go", askUser });
 
     expect(result.recap).toBe("recap text");
-    expect(result.qa).toEqual([
-      { question: 'What else should I know about your "learn Go" course?', answer: "beginner" },
-      { question: "I've recorded 1 answer. What else should I know?", answer: "beginner" },
-    ]);
-    expect(asked).toEqual([
-      'What else should I know about your "learn Go" course?',
-      "I've recorded 1 answer. What else should I know?",
-    ]);
+    expect(result.qa).toEqual([]);
+    expect(asked).toEqual([]);
   });
 
   test("refuses a 4th ask_user call and forces the model to recap", async () => {

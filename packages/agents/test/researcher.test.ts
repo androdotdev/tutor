@@ -85,8 +85,9 @@ beforeAll(() => {
               enc(chunk({ choices: [{ delta: {}, finish_reason: "stop" }] }));
             }
           } else if (mode === "bad") {
-            // submit_findings called but always missing source_url; fires on
-            // both attempts (completesRun ends each run at the call).
+            // submit_findings called but always missing source_url; pi
+            // validation rejects it before execute, so neither attempt
+            // captures a payload and the stage fails as "not called".
             enc(
               chunk({
                 choices: [
@@ -156,9 +157,15 @@ describe("runResearch", () => {
       prompt: "docker networking",
       webSearchTool: webSearchTool(),
     });
-    const body = lastBody as { messages: Array<{ role: string; content: string }> };
-    const system = body.messages.find((m) => m.role === "system")?.content ?? "";
-    const user = body.messages.find((m) => m.role === "user")?.content ?? "";
+    const body = lastBody as { messages: Array<{ role: string; content: unknown }> };
+    const text = (m: { content: unknown }): string =>
+      Array.isArray(m.content)
+        ? m.content
+            .map((b) => (b && typeof b === "object" && "text" in b ? String((b as { text: unknown }).text) : ""))
+            .join("")
+        : String(m.content);
+    const system = text(body.messages.find((m) => m.role === "system") ?? { content: "" });
+    const user = text(body.messages.find((m) => m.role === "user") ?? { content: "" });
     expect(system).toContain("research assistant for course authoring");
     expect(system).not.toContain("docker networking");
     expect(user).toContain("docker networking");
@@ -185,11 +192,11 @@ describe("runResearch", () => {
     ).rejects.toThrow(/Research stage failed: the model finished without calling submit_findings/);
   });
 
-  test("names the exact validation problem when submit_findings is malformed", async () => {
+  test("a malformed submit_findings never executes; both attempts fail as not-called", async () => {
     mode = "bad";
     callCount = 0;
     await expect(
       runResearch({ provider, prompt: "topic", webSearchTool: webSearchTool() }),
-    ).rejects.toThrow(/findings\[0\]\.source_url is missing or not a string/);
+    ).rejects.toThrow(/Research stage failed: the model finished without calling submit_findings/);
   });
 });

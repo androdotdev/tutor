@@ -1,10 +1,12 @@
 // Plan stage: turn the topic prompt (plus optional research findings) into a
 // CourseOutline via a single forced-tool-call capture (`submit_outline`).
 // Mirrors the author session's runtime wiring (see author.ts).
-import { createAgentRuntime, type AgentRuntimeConfig } from "@cline/agents";
-import { createTool, type AgentTool } from "@cline/shared";
-import { buildModel, type ProviderSelection } from "@tutor/llms";
+import { Agent } from "@earendil-works/pi-agent-core";
+import { Type } from "@earendil-works/pi-ai";
+import { jsonResult, type PiAgentTool } from "@tutor/core";
+import { buildModel, buildStreamFn, type ProviderSelection } from "@tutor/llms";
 import type { CourseOutline, ModuleDifficulty, PlannedModule, ResearchReport } from "./pipeline-types.ts";
+import { attachPiBridge, lastAssistantText } from "./pi-events";
 import { progressLogger } from "./progress";
 
 export interface PlanOptions {
@@ -107,6 +109,22 @@ function parseOutline(input: unknown): CourseOutline | null {
   return { name: obj.name as string, topic: obj.topic as string, modules: parsed };
 }
 
+/** The planner's only output channel; validated by the pi loop before execute. */
+const submitOutlineParams = Type.Object({
+  name: Type.String(),
+  topic: Type.String(),
+  modules: Type.Array(
+    Type.Object({
+      id: Type.String(),
+      title: Type.String(),
+      concepts: Type.Array(Type.String()),
+      difficulty: Type.Union([Type.Literal("intro"), Type.Literal("core"), Type.Literal("capstone")]),
+      sources: Type.Optional(Type.Array(Type.String())),
+    }),
+    { minItems: 2, maxItems: 8 },
+  ),
+});
+
 /** One fresh runtime + capture attempt; null means "invalid outline, retry". */
 async function runOutlineAttempt(
   provider: ProviderSelection,
@@ -116,54 +134,40 @@ async function runOutlineAttempt(
   progress?: boolean,
 ): Promise<{ outline: CourseOutline | null; called: boolean; payload: unknown; outputText: string }> {
   let captured: unknown = null;
-  const submitOutlineTool: AgentTool = createTool({
+  const submitOutlineTool: PiAgentTool<typeof submitOutlineParams> = {
     name: "submit_outline",
+    label: "Submit the complete course outline",
     description: "Submit the complete course outline. The ONLY way to deliver your answer.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        name: { type: "string" },
-        topic: { type: "string" },
-        modules: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              id: { type: "string" },
-              title: { type: "string" },
-              concepts: { type: "array", items: { type: "string" } },
-              difficulty: { type: "string", enum: ["intro", "core", "capstone"] },
-              sources: { type: "array", items: { type: "string" } },
-            },
-            required: ["id", "title", "concepts", "difficulty"],
-          },
-        },
-      },
-      required: ["name", "topic", "modules"],
+    parameters: submitOutlineParams,
+    execute: async (_toolCallId, params) => {
+      captured = params;
+      return { ...jsonResult({ ok: true }), terminate: true };
     },
-    execute: async (input: unknown) => {
-      captured = input;
-      return { ok: true };
+  };
+
+  const agent = new Agent({
+    streamFn: buildStreamFn(provider),
+    initialState: {
+      systemPrompt,
+      model: buildModel(provider),
+      thinkingLevel: "off",
+      tools: [submitOutlineTool],
     },
-    lifecycle: { completesRun: true },
+  });
+  const bridge = attachPiBridge(agent, {
+    maxIterations: 6,
+    onEvent: progress ? progressLogger("plan") : undefined,
   });
 
-  const runtime = createAgentRuntime({
-    model: buildModel(provider),
-    systemPrompt,
-    tools: [submitOutlineTool],
-    maxIterations: 6,
-    hooks: progress ? { onEvent: progressLogger("plan") } : undefined,
-  } satisfies AgentRuntimeConfig);
-
-  const result = await runtime.run(input);
-  if (result.status === "failed") {
-    throw new Error("Planner did not produce a valid course outline");
+  await agent.prompt(input);
+  if (!bridge.capped()) {
+    const error = agent.state.errorMessage;
+    if (error) throw new Error(error ?? "Planner did not produce a valid course outline");
   }
 
   let outline = parseOutline(captured);
   if (outline && clamped !== null && outline.modules.length !== clamped) outline = null;
-  return { outline, called: captured !== null, payload: captured, outputText: result.outputText };
+  return { outline, called: captured !== null, payload: captured, outputText: lastAssistantText(agent) };
 }
 
 /** A one-line sketch of the payload for the final CLI error. */

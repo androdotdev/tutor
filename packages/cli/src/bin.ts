@@ -96,13 +96,10 @@ async function authorSingleModule(courseRoot: string, title: string, provider: P
   const session = createAuthorSession({ courseRoot, modules, module, provider });
   const written: string[] = [];
   session.subscribe((e) => {
-    if (e.type === "tool-finished" && e.toolCall.toolName === "write_file") {
-      for (const part of e.message.content) {
-        if (part.type === "tool-result") {
-          const out = part.output;
-          if (typeof out === "string") written.push(out);
-          else if (typeof out === "object" && out !== null && "path" in out) written.push(String(out.path));
-        }
+    if (e.type === "tool-finished" && e.toolName === "write_file" && !e.isError) {
+      const details = (e.result as { details?: unknown } | null)?.details;
+      if (typeof details === "object" && details !== null && "path" in details) {
+        written.push(String((details as { path: unknown }).path));
       }
     }
   });

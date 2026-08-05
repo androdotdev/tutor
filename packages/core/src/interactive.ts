@@ -12,31 +12,8 @@ export interface AskUserQA {
   answer: string;
 }
 
-/**
- * Shown when a model calls ask_user without a question (some models send
- * `{}`). Never block on stdin with a blank prompt.
- * P3 (validation live in the pi loop) deletes this entire fallback path.
- */
-export const FALLBACK_QUESTION = "What else should I know about the course you want?";
-
 /** Hard ceiling on ask_user invocations; matches the prompt's "0-3 total". */
 export const MAX_ASK_USER_CALLS = 3;
-
-/**
- * The fallback question text when the model sends `{}` with no topic
- * context; with a topic it names the course so the prompt is actually
- * useful. Never identical across calls: later ones count recorded answers.
- */
-function fallbackQuestion(topic: string | undefined, answered: number): string {
-  if (answered > 0) {
-    return `I've recorded ${answered} answer${answered === 1 ? "" : "s"}. What else should I know?`;
-  }
-  if (topic && topic.trim() !== "") {
-    const t = topic.trim();
-    return `What else should I know about your "${t.length > 48 ? `${t.slice(0, 48)}…` : t}" course?`;
-  }
-  return FALLBACK_QUESTION;
-}
 
 /**
  * Reads answers from the terminal. On a real interactive terminal (TTY on
@@ -48,13 +25,12 @@ function fallbackQuestion(topic: string | undefined, answered: number): string {
  */
 export function defaultPromptLine(): AskUserFn {
   return async (question: string): Promise<string> => {
-    const q = typeof question === "string" && question.trim() !== "" ? question : FALLBACK_QUESTION;
     if (process.stdin.isTTY && process.stdout.isTTY && process.env.TERM !== "dumb") {
-      return await input({ message: q });
+      return await input({ message: question });
     }
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     try {
-      return await rl.question(q);
+      return await rl.question(question);
     } finally {
       rl.close();
     }
@@ -69,15 +45,13 @@ const askUserParams = Type.Object({ question: Type.String() });
  * returns the full exchange list once the run is over.
  *
  * Bounds: at most `MAX_ASK_USER_CALLS` invocations (the 4th+ throws, which
- * the runtime feeds back to the model as a tool error, forcing a recap).
- * Missing/empty `question` args fall back to a topic-aware prompt so a model
- * that sends `{}` can never hang the terminal on a blank line. The schema
- * marks `question` required (final state); with the pi loop's validation live
- * (P3) the runtime guard below is deleted along with the fallback helpers.
+ * the loop feeds back to the model as a tool error, forcing a recap).
+ * `question` is required by the schema; the pi loop validates arguments
+ * before `execute` runs, so a missing/empty `{}` call never reaches the
+ * terminal.
  */
 export function createAskUserTool(
   promptLine: AskUserFn,
-  topic?: string,
 ): { tool: PiAgentTool<typeof askUserParams>; getQA: () => AskUserQA[] } {
   const qa: AskUserQA[] = [];
   let calls = 0;
@@ -94,13 +68,9 @@ export function createAskUserTool(
         );
       }
       calls++;
-      const asked = input?.question;
-      const question =
-        typeof asked === "string" && asked.trim() !== "" ? asked : fallbackQuestion(topic, qa.length);
-      const answer = await promptLine(question);
-      qa.push({ question, answer });
-      const result = { ok: true, answer };
-      return jsonResult(result);
+      const answer = await promptLine(input.question);
+      qa.push({ question: input.question, answer });
+      return jsonResult({ ok: true, answer });
     },
   };
   return { tool, getQA: () => qa.slice() };

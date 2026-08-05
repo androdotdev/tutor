@@ -118,7 +118,13 @@ describe("session history persistence", () => {
     await s2.ask("follow up");
     const last = requests[requests.length - 1];
     const roles = last.messages.map((m) => m.role);
-    const texts = last.messages.map((m) => String(m.content));
+    const text = (m: { content: unknown }): string =>
+      Array.isArray(m.content)
+        ? m.content
+            .map((b) => (b && typeof b === "object" && "text" in b ? String((b as { text: unknown }).text) : ""))
+            .join("")
+        : String(m.content);
+    const texts = last.messages.map(text);
     expect(roles).toEqual(["system", "user", "assistant", "user"]);
     expect(texts).toContain("what is a route?");
     expect(texts).toContain("mock reply");
@@ -147,6 +153,9 @@ describe("session history persistence", () => {
     const last = requests[requests.length - 1];
     const nonSystem = last.messages.filter((m) => m.role !== "system");
     expect(nonSystem).toHaveLength(51); // 50 seeded + 1 fresh question
-    expect(String(nonSystem[0].content)).toBe("q35"); // turns 0..69 rotated out
+    const firstText = Array.isArray(nonSystem[0].content)
+      ? (nonSystem[0].content[0] as { text?: string }).text
+      : String(nonSystem[0].content);
+    expect(firstText).toBe("q35"); // turns 0..69 rotated out
   });
 });

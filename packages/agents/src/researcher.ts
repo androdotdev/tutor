@@ -1,8 +1,9 @@
-import { createAgentRuntime, type AgentRuntimeConfig } from "@cline/agents";
-import { createTool, type AgentTool } from "@cline/shared";
-import { toClineTool, type PiAgentTool } from "@tutor/core";
-import { buildModel, type ProviderSelection } from "@tutor/llms";
+import { Agent } from "@earendil-works/pi-agent-core";
+import { Type } from "@earendil-works/pi-ai";
+import { jsonResult, type PiAgentTool } from "@tutor/core";
+import { buildModel, buildStreamFn, type ProviderSelection } from "@tutor/llms";
 import type { ResearchFinding, ResearchReport } from "./pipeline-types";
+import { attachPiBridge, lastAssistantText } from "./pi-events";
 import { progressLogger } from "./progress";
 
 export interface ResearchOptions {
@@ -84,40 +85,36 @@ export function parseReport(input: unknown): ResearchReport | null {
 }
 
 /**
- * The researcher's only output channel: stashes the model's arguments in a
- * closure so the stage can read them after the run; `{ ok: true }` lets the
- * agent loop finish normally.
+ * The researcher's only output channel: stashes the model's VALIDATED
+ * arguments in a closure so the stage can read them after the run. The pi
+ * loop validates the TypeBox schema before execute runs, so a malformed
+ * payload never reaches the tool; its error is fed back to the model.
+ * `terminate: true` ends the run right after the batch, like the old
+ * completesRun lifecycle.
  */
-function createSubmitFindingsTool(): { tool: AgentTool; captured: () => unknown } {
+const submitFindingsParams = Type.Object({
+  findings: Type.Array(
+    Type.Object({
+      claim: Type.String(),
+      source_url: Type.String(),
+      note: Type.Optional(Type.String()),
+    }),
+  ),
+  caveats: Type.Optional(Type.String()),
+});
+
+function createSubmitFindingsTool(): { tool: PiAgentTool<typeof submitFindingsParams>; captured: () => unknown } {
   let captured: unknown;
-  const tool = createTool({
+  const tool: PiAgentTool<typeof submitFindingsParams> = {
     name: "submit_findings",
+    label: "Submit the research report",
     description: "Submit the research report. The ONLY way to deliver your findings.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        findings: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              claim: { type: "string" },
-              source_url: { type: "string" },
-              note: { type: "string" },
-            },
-            required: ["claim", "source_url"],
-          },
-        },
-        caveats: { type: "string" },
-      },
-      required: ["findings"],
+    parameters: submitFindingsParams,
+    execute: async (_toolCallId, params) => {
+      captured = params;
+      return { ...jsonResult({ ok: true }), terminate: true };
     },
-    execute: async (input: unknown) => {
-      captured = input;
-      return { ok: true };
-    },
-    lifecycle: { completesRun: true },
-  });
+  };
   return { tool, captured: () => captured };
 }
 
@@ -127,24 +124,31 @@ async function attempt(
   prompt: string,
 ): Promise<{ report: ResearchReport | null; called: boolean; payload: unknown; outputText: string }> {
   const { tool: submitFindingsTool, captured } = createSubmitFindingsTool();
-  const runtime = createAgentRuntime({
-    model: buildModel(opts.provider),
-    systemPrompt: buildResearchPrompt(),
-    tools: [toClineTool(opts.webSearchTool), submitFindingsTool],
+  const agent = new Agent({
+    streamFn: buildStreamFn(opts.provider),
+    initialState: {
+      systemPrompt: buildResearchPrompt(),
+      model: buildModel(opts.provider),
+      thinkingLevel: "off",
+      tools: [opts.webSearchTool, submitFindingsTool],
+    },
+  });
+  const bridge = attachPiBridge(agent, {
     maxIterations: MAX_RESEARCH_ITERATIONS,
-    hooks: opts.progress ? { onEvent: progressLogger("research") } : undefined,
-  } satisfies AgentRuntimeConfig);
+    onEvent: opts.progress ? progressLogger("research") : undefined,
+  });
 
-  const result = await runtime.run(prompt);
-  if (result.status === "failed") {
-    throw new Error(result.error?.message ?? "research run failed");
+  await agent.prompt(prompt);
+  if (!bridge.capped()) {
+    const error = agent.state.errorMessage;
+    if (error) throw new Error(error ?? "research run failed");
   }
   const payload = captured();
   return {
     report: parseReport(payload),
     called: payload !== undefined,
     payload,
-    outputText: result.outputText,
+    outputText: lastAssistantText(agent),
   };
 }
 

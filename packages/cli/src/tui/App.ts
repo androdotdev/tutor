@@ -10,9 +10,8 @@ import {
   type Component,
   type SelectItem,
 } from "@oh-my-pi/pi-tui";
-import type { AgentRuntimeEvent } from "@cline/shared";
 import type { ModuleDesc } from "@tutor/shared";
-import type { TutorSession } from "@tutor/agents";
+import type { TutorSession, TutorRuntimeEvent } from "@tutor/agents";
 import type { ProviderSelection } from "@tutor/llms";
 import { markdownTheme, selectTheme, style } from "./theme";
 
@@ -219,7 +218,7 @@ export class SessionView extends Container {
   private setBusyStatus(): void {
     this.status.setText(style.yellow("coach is thinking — run_tests may execute… (Esc to stop)"));
   }
-  private onEvent(event: AgentRuntimeEvent): void {
+  private onEvent(event: TutorRuntimeEvent): void {
     switch (event.type) {
       case "assistant-text-delta":
         this.transcript.setLive(event.accumulatedText);
@@ -230,13 +229,14 @@ export class SessionView extends Container {
       case "run-failed":
         this.transcript.dropLive();
         this.status.setText(style.red(`coach run failed — press Enter to retry (${event.error.message})`));
-        break;      case "tool-started":
-        if (event.toolCall.toolName === "run_tests") {
+        break;
+      case "tool-started":
+        if (event.toolName === "run_tests") {
           this.status.setText(style.blue("running the module's tests…"));
         }
         break;
       case "tool-finished":
-        if (event.toolCall.toolName === "run_tests") {
+        if (event.toolName === "run_tests") {
           this.status.setText(style.dim("tests finished — output relayed above"));
         }
         break;

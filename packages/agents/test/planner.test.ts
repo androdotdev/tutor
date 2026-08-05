@@ -131,9 +131,15 @@ describe("planCourse", () => {
     });
 
     expect(result).toEqual(outline);
-    const body = lastBody as { messages: Array<{ role: string; content: string }> };
-    const system = body.messages.find((m) => m.role === "system")?.content ?? "";
-    const user = body.messages.find((m) => m.role === "user")?.content ?? "";
+    const body = lastBody as { messages: Array<{ role: string; content: unknown }> };
+    const text = (m: { content: unknown }): string =>
+      Array.isArray(m.content)
+        ? m.content
+            .map((b) => (b && typeof b === "object" && "text" in b ? String((b as { text: unknown }).text) : ""))
+            .join("")
+        : String(m.content);
+    const system = text(body.messages.find((m) => m.role === "system") ?? { content: "" });
+    const user = text(body.messages.find((m) => m.role === "user") ?? { content: "" });
     expect(system).toContain("curriculum designer");
     expect(system).not.toContain("Research findings");
     expect(system).not.toContain("Dockerfile layers are cached");
