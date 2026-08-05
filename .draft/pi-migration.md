@@ -1,7 +1,6 @@
 # PLAN — migrate to `@earendil-works/{pi-agent-core,pi-ai,pi-tui}`
 
-Status: **P0–P3 complete** (each landed green on `feat/pi-migration`: `980df44` plan,
-`baaf176` P1, `baefe76` P2, `8736f33` P3). P4/P5 deferred as scoped below.
+Status: **MERGED + RELEASED as cli-v0.3.0 (2026-08-05)** — P0–P3 landed green on `feat/pi-migration` (`980df44` plan, `baaf176` P1, `baefe76` P2, `8736f33` P3), P5 (`d5afc60`) shipped the file-based stage handoffs, then merged into `main` (`85d906d`) with `@cline/*` deps removed (`4c4109b`) and the cli bumped to 0.3.0. P4 skipped by decision (see below).
 
 ## Why
 
