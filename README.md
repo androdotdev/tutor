@@ -1,14 +1,15 @@
 # lyceum — Socratic self-learning tutor
 
 **Alpha.** APIs, storage layouts, and behavior can change without notice between
-0.0.x releases.
+0.3.x releases.
 
 A provider-agnostic coach that drives interactive courses through **Socratic
 tutoring**: it never reveals solutions or pastes finished code, it asks what you
 tried / predicted / observed before answering, and it uses the course's own
 `bun test` suite as the only grader.
 
-Built as a small monorepo of packages on top of the `@cline/*` SDK agent loop.
+Built as a small monorepo of packages on top of the `@earendil-works/pi-agent-core`
+agent loop.
 
 ## Features
 
@@ -29,8 +30,10 @@ Built as a small monorepo of packages on top of the `@cline/*` SDK agent loop.
 - **Provider-agnostic** — OpenAI-compatible endpoints, OpenRouter, Ollama; env
   vars or config file.
 - **Course generation** — `lyceum new "<prompt>"` runs a full pipeline:
-  clarifying questions, web research, a curriculum plan, then per-module
-  authoring with an AI agent (checkpointed, resumable).
+  clarifying questions, web research, a prerequisite-ordered curriculum plan,
+  then per-module authoring with an AI agent — checkpointed, resumable, and
+  verified (a module only counts as drafted once its README, exercise stub,
+  and test grader actually land under `modules/<dir>/`).
 
 ## Quick start
 
@@ -53,12 +56,15 @@ course/
 ├── modules/
 │   └── 01-routing/
 │       ├── README.md     # module notes (injected into the coach's context)
-│       ├── exercises/    # student exercise files
-│       ├── tests/        # the grader (or legacy: tests inside exercises/)
+│       ├── exercise/     # student exercise files (index.js)
+│       ├── tests/        # the grader (index.test.js)
 │       ├── project/      # optional capstone (solution.js is gated)
 │       └── solutions/    # NEVER shown to the coach
 ├── session/              # per-module conversation history (gitignore this)
-├── .lyceum/plan.json     # course-generation checkpoint (gitignore this)
+├── .lyceum/              # course-generation state (gitignore this)
+│   ├── research.json     # web research findings (research stage)
+│   ├── outline.json      # course name + topic (plan stage)
+│   └── plan.json         # checkpoint: prompt, full outline, per-module status
 └── PROGRESS.md           # Learn-in-Public progress notes (optional)
 ```
 
@@ -129,7 +135,7 @@ Requires Bun >= 1.3.14.
 
 ```sh
 bun install
-bun test            # 46 tests: spoiler gates, skills, config, provider, history, transcript
+bun test            # 87 tests: planner, course-builder, author, spoiler gates, provider, history
 bun run typecheck   # tsc --noEmit (typescript 6.0.3, strict)
 bun run lint        # eslint packages
 bun run smoke       # live agent-loop smoke against a mock SSE server

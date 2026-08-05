@@ -1,6 +1,6 @@
 # `@androff/tutor-ai` — the `lyceum` CLI
 
-**Alpha.** Commands, flags, and config formats can change between 0.0.x releases.
+**Alpha.** Commands, flags, and config formats can change between 0.3.x releases.
 
 Socratic tutor & author for self-learning courses. A provider-agnostic coach
 that never reveals solutions, never pastes finished code, and uses the course's
@@ -46,14 +46,23 @@ Four stages run in sequence:
 1. **Clarify** — asks up to 3 questions (level, scope, format) before planning;
    `--yes` skips them.
 2. **Research** — the agent searches the web (`web_search`, no API key) and
-   submits a sourced findings report. This stage is required; `--no-research`
-   opts out for cheap or offline runs.
-3. **Plan** — the planner submits a course outline (2–8 modules, difficulty
-   ramping intro → core → capstone), written to `.lyceum/plan.json` as a
-   checkpoint.
+   writes a sourced findings report to `.lyceum/research.json`. This stage is
+   required; `--no-research` opts out for cheap or offline runs.
+3. **Plan** — the planner writes the course metadata to `.lyceum/outline.json`
+   (`{ name, topic }`) and delivers one module file per module, ordered by
+   prerequisite dependencies (the id IS the teaching sequence, difficulty
+   ramping intro → core → capstone). The assembled outline is saved to
+   `.lyceum/plan.json` as the checkpoint; the per-module delivery files are
+   cleaned up afterwards. A model that plans in prose instead of writing files
+   is rescued by parsing the outline out of its final text.
 4. **Build** — every module is authored in outline order (skeleton created
    first: `exercise/`, `tests/`, `solutions/`), continuing past a failing
-   module; each module's status is recorded in the checkpoint.
+   module. Each module's status is recorded in the checkpoint. A module is
+   `drafted` only when `tests/index.test.js`, `exercise/index.js`, and
+   `README.md` all land under `modules/<dir>/`; anything else is `failed` with
+   the missing files named. A model that ends a turn without writing files
+   (including turns cut off by the output token limit) is nudged back to
+   `write_file` up to 3 times before the module is failed.
 
 Every stage streams its reasoning and tool calls live and prints a
 `waiting for model…` line before each model call, so a run never looks hung;
@@ -126,6 +135,20 @@ lyceum/
 }
 ```
 
+## `.lyceum/` course-generation state
+
+`lyceum new` leaves three files under the course's `.lyceum/` (gitignore it):
+
+| File | Written by | Contents |
+| --- | --- | --- |
+| `research.json` | research stage | web findings `{ findings: [{ claim, source_url }], caveats }` |
+| `outline.json` | plan stage | course `{ name, topic }` |
+| `plan.json` | CLI after planning | checkpoint: `{ prompt, outline, modules: [{ id, title, status }] }` — updated by the build stage |
+
+The plan stage also uses `.lyceum/modules/<id>.json` as a per-module delivery
+transport while planning; those files are removed once the outline is
+assembled. `session/` holds TUI conversation history, one file per module.
+
 ## Session history
 
 Each module's conversation is persisted to `<course>/session/<module-id>.json`
@@ -142,7 +165,11 @@ Add `session/` to the course's `.gitignore` to keep conversations local.
 
 ```sh
 bun run build       # tsup → dist/bin.js
-npm publish         # from packages/cli; runs prepublishOnly (build) first
 ```
 
-`files` ships only `dist`; npm always includes this README on the package page.
+Releases are **tag-driven**: bump `packages/cli/package.json`, commit
+(`release(cli): bump to X.Y.Z — …`), then push a `cli-vX.Y.Z` tag. The
+publish workflow (`.github/workflows/publish.yml`) builds, sets the version
+from the tag, and runs `npm publish --access public` with the `NPM_TOKEN`
+secret. `files` ships only `dist`; npm always includes this README on the
+package page.

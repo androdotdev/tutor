@@ -6,9 +6,19 @@ Status: research draft → **P0 (Option A) landed 2026-08-05** on `feat/pi-migra
 plan handoff refined to MODULE-WISE delivery** — `.lyceum/outline.json` carries
 only `{ name, topic }` and each module is its own `.lyceum/modules/<id>.json`;
 a complete outline delivered as final TEXT is parsed and persisted stage-side
-(no more "planned but never wrote the file" failures). Remaining phases P1
-(test-verified status, parallel authoring, health beacon ✓ already shipped via
-stash), P2 (hybrid fallback, per-file resume, plan.md) not started.
+(no more "planned but never wrote the file" failures); modules are ordered by
+prerequisite dependencies (id = teaching sequence). **2026-08-05 (main, 0.3.1–0.3.4):
+author stage hardened** — a module is `drafted` only when the three authored
+files land under `modules/<dir>/` (else `failed: authored files missing: …`,
+resume retries); the author write watchdog rescues text-only AND
+output-token-cut (`finish_reason: length`) turns with up to 3 nudges back to
+`write_file`, and the author session's output budget is 8192 tokens. The
+`.lyceum/modules/` transport files are removed after assembly — final `.lyceum`
+is `research.json`, `outline.json`, `plan.json` (P2-G's plan.md not started).
+Live result on `tencent/hy3:free`: 6/6 modules drafted on a docker course.
+Remaining phases P1 (parallel authoring, test-verified status beyond file
+presence, health beacon ✓ already shipped via stash), P2 (hybrid fallback,
+per-file resume, plan.md) not started.
 
 ## TL;DR
 
