@@ -2,6 +2,7 @@
 // module's directory skeleton, then runs the author session per module in
 // outline order, resuming a checkpointed plan (skip "drafted", record
 // "failed" and continue). Never aborts the whole build on one bad module.
+import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { slugify } from "@tutor/core";
@@ -28,6 +29,10 @@ export interface BuildCourseResult {
 }
 
 const MODULE_SUBDIRS = ["exercise", "tests", "solutions"] as const;
+
+/** Files a successful author run MUST land under modules/<dir>/; the grader
+ * only ever runs these. A run missing any of them is failed, not drafted. */
+const AUTHORED_FILES = ["tests/index.test.js", "exercise/index.js", "README.md"] as const;
 
 /** The module directory name an outline module maps to. */
 function moduleDir(m: { id: string; title: string }): string {
@@ -57,8 +62,7 @@ export async function buildCourse(opts: BuildCourseOptions): Promise<BuildCourse
 
   // Pre-create ALL module dirs first so resolveCourse sees every module and
   // the author sessions can write into their skeletons.
-  const dirs = new Map<string, string>();
-  for (const m of outline.modules) {
+  const dirs = new Map<string, string>();  for (const m of outline.modules) {
     const dir = moduleDir(m);
     dirs.set(m.id, dir);
     for (const sub of MODULE_SUBDIRS) {
@@ -96,6 +100,18 @@ export async function buildCourse(opts: BuildCourseOptions): Promise<BuildCourse
         `Author the module "${m.title}". Concepts to cover: ${m.concepts.join("; ")}. ` +
         `Sources to cite: ${(m.sources ?? []).join(", ")}`;
       await session.run(task);
+      // The grader only sees modules/<dir>/tests/, exercise/, README.md — a
+      // run that finished without landing those files (e.g. wrote to a bare
+      // path at the course root) is NOT drafted: fail loudly so the resume
+      // loop retries instead of leaving a silently broken module behind.
+      const missingFiles = AUTHORED_FILES.filter(
+        (f) => !existsSync(join(courseRoot, "modules", dir, f)),
+      );
+      if (missingFiles.length) {
+        console.log(`drafting ${dir}... FAILED: missing ${missingFiles.join(", ")}`);
+        markModule(plan, m.id, { status: "failed", error: `authored files missing: ${missingFiles.join(", ")}`, dir });
+        continue;
+      }
       markModule(plan, m.id, { status: "drafted", dir });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

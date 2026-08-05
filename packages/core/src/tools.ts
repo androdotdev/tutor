@@ -315,7 +315,7 @@ export function buildAuthorTools(ctx: TutorContext, deps: { search?: SearchFn } 
     name: "write_file",
     label: "Create or overwrite a course file",
     description:
-      "Create or overwrite a course file so you can author modules: README.md, exercise/index.js (stub), tests/index.test.js. `path` is relative to the course root. Never write to solutions/.",
+      "Create or overwrite a course file so you can author modules. `path` is relative to the course root and MUST include the modules/<module-dir>/ prefix — e.g. modules/01-example/README.md, modules/01-example/exercise/index.js, modules/01-example/tests/index.test.js. Never write to solutions/.",
     parameters: writeFileParams,
     execute: async (_toolCallId, input: Static<typeof writeFileParams>) => {
       const courseRoot = rootOf(ctx.courseRoot);
