@@ -9,7 +9,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@cline/shared": "0.0.69",
     "@earendil-works/pi-ai": "0.83.0",
     "@earendil-works/pi-agent-core": "0.83.0",
     "@tutor/shared": "*"
