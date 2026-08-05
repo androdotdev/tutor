@@ -5,6 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAuthorTools, buildTools } from "../src/tools";
 import { MAX_WEB_RESULTS, searchWeb } from "../src/web-search";
+import type { PiAgentTool } from "../src/pi-tool";
+
+/** Run a pi tool and return its structured payload (details). */
+const call = async <T, R>(tool: PiAgentTool, params: T): Promise<R> =>
+  (await tool.execute("test-call", params as never)).details as R;
 
 const resultBlock = (i: number) => `
   <div class="result results_links results_links_deep web-result">
@@ -82,7 +87,7 @@ describe("web_search tool", () => {
   test("author tool set exposes web_search; execute returns results", async () => {
     const { ctx, cleanup } = makeCtx();
     const tools = buildAuthorTools(ctx, { search: async () => [{ title: "T", url: "https://u", snippet: "s" }] });
-    const r = await tools.web_search.execute({ query: "express" });
+    const r = await call(tools.web_search, { query: "express" });
     expect(r).toEqual({ ok: true, query: "express", results: [{ title: "T", url: "https://u", snippet: "s" }] });
     cleanup();
   });
@@ -94,7 +99,7 @@ describe("web_search tool", () => {
         throw new Error("rate limited");
       },
     });
-    const r = await tools.web_search.execute({ query: "express" });
+    const r = await call(tools.web_search, { query: "express" });
     expect(r.ok).toBe(false);
     expect(String((r as { message?: string }).message)).toContain("rate limited");
     cleanup();
@@ -109,9 +114,9 @@ describe("web_search tool", () => {
         return [{ title: "T", url: "https://u", snippet: `q=${q}` }];
       },
     });
-    await expect(tools.web_search.execute({ query: "  " })).rejects.toThrow(/without a query/);
+    await expect(call(tools.web_search, { query: "  " })).rejects.toThrow(/without a query/);
     // Runtime may deliver {} despite the required schema (stripped args).
-    await expect(tools.web_search.execute({} as { query: string })).rejects.toThrow(/without a query/);
+    await expect(call(tools.web_search, {} as { query: string })).rejects.toThrow(/without a query/);
     expect(searched).toBe(false);
     cleanup();
   });

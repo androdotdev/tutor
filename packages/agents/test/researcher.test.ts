@@ -1,21 +1,28 @@
 // Researcher-stage tests: a scripted mock SSE server (Bun.serve on port 0)
-// drives the research agent through web_search and submit_findings tool calls,
-// covering the happy path, the one-retry path, and the hard-fail path.
+// drives the research agent through web_search and write_file (the report
+// lands in .lyceum/research.json on real disk), covering the happy path, the
+// one-retry path, the invalid-file path, and the hard-fail path.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { buildAuthorTools } from "@tutor/core";
 import { resolveProvider, type ProviderSelection } from "@tutor/llms";
 import { runResearch } from "../src/researcher";
 
-// "happy": search, then submit findings, then "done".
-// "retry": plain text first (no report), then submit findings, then "done".
+const COURSE_ROOT = "/tmp/lyceum-research-test";
+
+// "happy": search, then write the report, then "done".
+// "retry": plain text first (no report), then write the report, then "done".
+// "bad": write_file always missing source_url — invalid content both attempts.
 // "fail": plain text both attempts — no report ever.
-let mode: "happy" | "retry" | "fail" = "happy";
+let mode: "happy" | "retry" | "bad" | "fail" = "happy";
 let callCount = 0;
 let lastBody: unknown;
 let server: ReturnType<typeof Bun.serve>;
 let provider: ProviderSelection;
 
 beforeAll(() => {
+  mkdirSync(COURSE_ROOT, { recursive: true });
   server = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -47,9 +54,12 @@ beforeAll(() => {
                   choices: [
                     {
                       delta: {
-                        tool_calls: tool("submit_findings", {
-                          findings: [{ claim: "X is current", source_url: "https://example.com/docs" }],
-                          caveats: "thin",
+                        tool_calls: tool("write_file", {
+                          path: ".lyceum/research.json",
+                          content: JSON.stringify({
+                            findings: [{ claim: "X is current", source_url: "https://example.com/docs" }],
+                            caveats: "thin",
+                          }),
                         }),
                       },
                     },
@@ -71,8 +81,11 @@ beforeAll(() => {
                   choices: [
                     {
                       delta: {
-                        tool_calls: tool("submit_findings", {
-                          findings: [{ claim: "Y is documented", source_url: "https://example.com/y" }],
+                        tool_calls: tool("write_file", {
+                          path: ".lyceum/research.json",
+                          content: JSON.stringify({
+                            findings: [{ claim: "Y is documented", source_url: "https://example.com/y" }],
+                          }),
                         }),
                       },
                     },
@@ -85,15 +98,17 @@ beforeAll(() => {
               enc(chunk({ choices: [{ delta: {}, finish_reason: "stop" }] }));
             }
           } else if (mode === "bad") {
-            // submit_findings called but always missing source_url; fires on
-            // both attempts (completesRun ends each run at the call).
+            // write_file always missing source_url in the content; the stage
+            // validation rejects it, so both attempts fail with a structured
+            // reason naming the exact field.
             enc(
               chunk({
                 choices: [
                   {
                     delta: {
-                      tool_calls: tool("submit_findings", {
-                        findings: [{ claim: "no source attached" }],
+                      tool_calls: tool("write_file", {
+                        path: ".lyceum/research.json",
+                        content: JSON.stringify({ findings: [{ claim: "no source attached" }] }),
                       }),
                     },
                   },
@@ -126,20 +141,27 @@ afterAll(() => {
   server.stop(true);
 });
 
+/** Fresh slate: a stale report file from a previous mode must not leak in. */
+function resetReport(): void {
+  rmSync(join(COURSE_ROOT, ".lyceum"), { recursive: true, force: true });
+}
+
 function webSearchTool() {
   return buildAuthorTools(
-    { courseRoot: "/tmp/lyceum-research", modules: [] },
+    { courseRoot: COURSE_ROOT, modules: [] },
     { search: async () => [{ title: "Docs", url: "https://example.com/docs", snippet: "s" }] },
   ).web_search;
 }
 
 describe("runResearch", () => {
-  test("searches, submits findings, and returns the parsed report", async () => {
+  test("searches, writes the report file, and returns the parsed report", async () => {
     mode = "happy";
     callCount = 0;
+    resetReport();
     const report = await runResearch({
       provider,
       prompt: "topic",
+      courseRoot: COURSE_ROOT,
       webSearchTool: webSearchTool(),
     });
     expect(report).toEqual({
@@ -151,25 +173,35 @@ describe("runResearch", () => {
   test("keeps the topic in the user turn, not the system prompt", async () => {
     mode = "happy";
     callCount = 0;
+    resetReport();
     await runResearch({
       provider,
       prompt: "docker networking",
+      courseRoot: COURSE_ROOT,
       webSearchTool: webSearchTool(),
     });
-    const body = lastBody as { messages: Array<{ role: string; content: string }> };
-    const system = body.messages.find((m) => m.role === "system")?.content ?? "";
-    const user = body.messages.find((m) => m.role === "user")?.content ?? "";
+    const body = lastBody as { messages: Array<{ role: string; content: unknown }> };
+    const text = (m: { content: unknown }): string =>
+      Array.isArray(m.content)
+        ? m.content
+            .map((b) => (b && typeof b === "object" && "text" in b ? String((b as { text: unknown }).text) : ""))
+            .join("")
+        : String(m.content);
+    const system = text(body.messages.find((m) => m.role === "system") ?? { content: "" });
+    const user = text(body.messages.find((m) => m.role === "user") ?? { content: "" });
     expect(system).toContain("research assistant for course authoring");
     expect(system).not.toContain("docker networking");
     expect(user).toContain("docker networking");
   });
 
-  test("retries once when the first reply has no submit_findings call", async () => {
+  test("retries once when the first reply writes no report file", async () => {
     mode = "retry";
     callCount = 0;
+    resetReport();
     const report = await runResearch({
       provider,
       prompt: "topic",
+      courseRoot: COURSE_ROOT,
       webSearchTool: webSearchTool(),
     });
     expect(report).toEqual({
@@ -180,16 +212,18 @@ describe("runResearch", () => {
   test("throws when neither attempt produces a valid report", async () => {
     mode = "fail";
     callCount = 0;
+    resetReport();
     await expect(
-      runResearch({ provider, prompt: "topic", webSearchTool: webSearchTool() }),
-    ).rejects.toThrow(/Research stage failed: the model finished without calling submit_findings/);
+      runResearch({ provider, prompt: "topic", courseRoot: COURSE_ROOT, webSearchTool: webSearchTool() }),
+    ).rejects.toThrow(/Research stage failed: the model finished without writing \.lyceum\/research\.json/);
   });
 
-  test("names the exact validation problem when submit_findings is malformed", async () => {
+  test("names the exact validation problem when the report file is malformed", async () => {
     mode = "bad";
     callCount = 0;
+    resetReport();
     await expect(
-      runResearch({ provider, prompt: "topic", webSearchTool: webSearchTool() }),
-    ).rejects.toThrow(/findings\[0\]\.source_url is missing or not a string/);
+      runResearch({ provider, prompt: "topic", courseRoot: COURSE_ROOT, webSearchTool: webSearchTool() }),
+    ).rejects.toThrow(/Research stage failed: research\.json is still invalid: findings\[0\]\.source_url is missing or not a string/);
   });
 });

@@ -6,6 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveCourse } from "@tutor/shared";
 import { buildTools } from "../src/tools";
+import type { PiAgentTool } from "../src/pi-tool";
+
+/** Run a pi tool and return its structured payload (details). */
+const call = async <T, R>(tool: PiAgentTool, params: T): Promise<R> =>
+  (await tool.execute("test-call", params as never)).details as R;
 
 type Tools = ReturnType<typeof buildTools>;
 let list_skills: Tools["list_skills"];
@@ -45,37 +50,37 @@ afterAll(() => {
 
 describe("lazy skills", () => {
   test("list_skills returns names only (.txt excluded)", async () => {
-    const r = await list_skills.execute({});
+    const r = await call(list_skills, {});
     expect(r.ok).toBe(true);
     // evil.md (a symlink) is listed by NAME — content stays gated behind get_skill.
     expect(r.skills).toEqual(["evil", "feynman", "learn-in-public"]);
   });
 
   test("get_skill loads the requested skill on demand", async () => {
-    const r = await get_skill.execute({ name: "feynman" });
+    const r = await call(get_skill, { name: "feynman" });
     expect(r.ok).toBe(true);
     expect(r.content).toContain("rubber duck");
   });
 
   test("get_skill matches names case-insensitively", async () => {
-    const r = await get_skill.execute({ name: "Learn-In-Public" });
+    const r = await call(get_skill, { name: "Learn-In-Public" });
     expect(r.ok).toBe(true);
     expect(r.content).toContain("Publish what you learned");
   });
 
   test("blocks a symlinked skill escaping the skills dir", async () => {
-    const r = await get_skill.execute({ name: "evil" });
+    const r = await call(get_skill, { name: "evil" });
     expect(r.blocked).toBe(true);
     expect(r.content).toBeUndefined();
   });
 
   test("rejects traversal names", async () => {
-    const r = await get_skill.execute({ name: "../outside-secret" });
+    const r = await call(get_skill, { name: "../outside-secret" });
     expect(r.ok).toBe(false);
   });
 
   test("unknown skill -> error, no crash", async () => {
-    const r = await get_skill.execute({ name: "nope" });
+    const r = await call(get_skill, { name: "nope" });
     expect(r.ok).toBe(false);
     expect(r.message).toContain('no skill named "nope"');
   });
@@ -85,10 +90,10 @@ describe("no skills dir", () => {
   test("list_skills is a no-op, get_skill errors politely", async () => {
     const modules = await resolveCourse(root);
     const bare = buildTools({ courseRoot: root, modules });
-    const l = await bare.list_skills.execute({});
+    const l = await call(bare.list_skills, {});
     expect(l.ok).toBe(true);
     expect(l.skills).toEqual([]);
-    const g = await bare.get_skill.execute({ name: "feynman" });
+    const g = await call(bare.get_skill, { name: "feynman" });
     expect(g.ok).toBe(false);
     expect(g.message).toContain("no skills directory configured");
   });

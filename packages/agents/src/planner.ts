@@ -1,15 +1,22 @@
 // Plan stage: turn the topic prompt (plus optional research findings) into a
-// CourseOutline via a single forced-tool-call capture (`submit_outline`).
-// Mirrors the author session's runtime wiring (see author.ts).
-import { createAgentRuntime, type AgentRuntimeConfig } from "@cline/agents";
-import { createTool, type AgentTool } from "@cline/shared";
-import { buildModel, type ProviderSelection } from "@tutor/llms";
+// CourseOutline written to `.lyceum/outline.json` via write_file (Option A —
+// file-based handoff, see .draft/course-builder-redesign.md). The stage reads
+// + validates the file after the run; the outline then lands in the plan.json
+// checkpoint through the same code path as before (bin.ts saveCoursePlan).
+import { Agent } from "@earendil-works/pi-agent-core";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { buildAuthorTools } from "@tutor/core";
+import { buildModel, buildStreamFn, type ProviderSelection } from "@tutor/llms";
 import type { CourseOutline, ModuleDifficulty, PlannedModule, ResearchReport } from "./pipeline-types.ts";
+import { attachPiBridge, lastAssistantText } from "./pi-events";
 import { progressLogger } from "./progress";
 
 export interface PlanOptions {
   provider: ProviderSelection;
   prompt: string;
+  /** Course root; the outline lands at `<courseRoot>/.lyceum/outline.json`. */
+  courseRoot: string;
   research?: ResearchReport | null;
   moduleCountOverride?: number;
   /** Stream the model's reasoning/text and log tool calls to stdout. */
@@ -17,6 +24,7 @@ export interface PlanOptions {
 }
 
 const DIFFICULTIES = ["intro", "core", "capstone"] as const;
+const OUTLINE_FILE = join(".lyceum", "outline.json");
 
 /** Clamp a requested module count into the 2..8 range; null when unset. */
 function clampedCount(count: number | undefined): number | null {
@@ -27,7 +35,7 @@ function clampedCount(count: number | undefined): number | null {
 /** Static role/rules for the planner; per-run data (topic, research) rides in the user turn. */
 function buildPlanSystemPrompt(clamped: number | null): string {
   const base =
-    "You are a curriculum designer. Design a self-learning course from the task you are given: 2 to 8 modules, difficulty ramping intro → core → capstone. Each module: a 2-digit id, a title, 3-6 concrete concepts (short phrases an authoring agent will teach), and a difficulty. Attach the relevant source urls to module.sources when research findings are provided. Call submit_outline ONCE with the complete outline — it is the only way to deliver your answer.";
+    "You are a curriculum designer. Design a self-learning course from the task you are given: 2 to 8 modules, difficulty ramping intro → core → capstone. Each module: a 2-digit id, a title, 3-6 concrete concepts (short phrases an authoring agent will teach), and a difficulty. Attach the relevant source urls to module.sources when research findings are provided. Write the complete outline to .lyceum/outline.json using the write_file tool — a JSON object { name, topic, modules: [{ id, title, concepts, difficulty, sources? }] }. It is the ONLY way to deliver your answer.";
   const cap = clamped !== null ? `\n\nThe course must have exactly ${clamped} modules.` : "";
   return base + cap;
 }
@@ -39,10 +47,10 @@ function buildPlanInput(prompt: string, research?: ResearchReport | null): strin
   return base + researchBlock;
 }
 
-/** Validation errors for a submit_outline payload; null when valid. */
+/** Validation errors for an outline.json payload; null when valid. */
 export function outlineErrors(input: unknown): string[] | null {
   if (typeof input !== "object" || input === null) {
-    return ["submit_outline arguments were not a JSON object"];
+    return ["outline.json content was not a JSON object"];
   }
   const obj = input as Record<string, unknown>;
   const errors: string[] = [];
@@ -86,7 +94,7 @@ export function outlineErrors(input: unknown): string[] | null {
   return errors.length ? errors : null;
 }
 
-/** Hand-rolled shape guard for the submit_outline payload. */
+/** Shape guard for the outline.json payload. */
 function parseOutline(input: unknown): CourseOutline | null {
   if (outlineErrors(input)) return null;
   const obj = input as Record<string, unknown>;
@@ -107,66 +115,65 @@ function parseOutline(input: unknown): CourseOutline | null {
   return { name: obj.name as string, topic: obj.topic as string, modules: parsed };
 }
 
-/** One fresh runtime + capture attempt; null means "invalid outline, retry". */
+/** Read + parse the stage file; distinguish missing vs unreadable vs invalid JSON. */
+async function readStageFile(
+  courseRoot: string,
+  file: string,
+): Promise<{ payload: unknown; parseError: string | null; hadFile: boolean }> {
+  let raw: string;
+  try {
+    raw = await readFile(join(courseRoot, file), "utf8");
+  } catch {
+    return { payload: undefined, parseError: null, hadFile: false };
+  }
+  try {
+    return { payload: JSON.parse(raw) as unknown, parseError: null, hadFile: true };
+  } catch (err) {
+    return {
+      payload: undefined,
+      parseError: `not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      hadFile: true,
+    };
+  }
+}
+
+/** One fresh runtime + file attempt; null means "invalid outline, retry". */
 async function runOutlineAttempt(
   provider: ProviderSelection,
+  courseRoot: string,
   systemPrompt: string,
   input: string,
   clamped: number | null,
   progress?: boolean,
-): Promise<{ outline: CourseOutline | null; called: boolean; payload: unknown; outputText: string }> {
-  let captured: unknown = null;
-  const submitOutlineTool: AgentTool = createTool({
-    name: "submit_outline",
-    description: "Submit the complete course outline. The ONLY way to deliver your answer.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        name: { type: "string" },
-        topic: { type: "string" },
-        modules: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              id: { type: "string" },
-              title: { type: "string" },
-              concepts: { type: "array", items: { type: "string" } },
-              difficulty: { type: "string", enum: ["intro", "core", "capstone"] },
-              sources: { type: "array", items: { type: "string" } },
-            },
-            required: ["id", "title", "concepts", "difficulty"],
-          },
-        },
-      },
-      required: ["name", "topic", "modules"],
+): Promise<{ outline: CourseOutline | null; payload: unknown; parseError: string | null; hadFile: boolean; outputText: string }> {
+  const { write_file } = buildAuthorTools({ courseRoot, modules: [] });
+  const agent = new Agent({
+    streamFn: buildStreamFn(provider),
+    initialState: {
+      systemPrompt,
+      model: buildModel(provider),
+      thinkingLevel: "off",
+      tools: [write_file],
     },
-    execute: async (input: unknown) => {
-      captured = input;
-      return { ok: true };
-    },
-    lifecycle: { completesRun: true },
+  });
+  const bridge = attachPiBridge(agent, {
+    maxIterations: 6,
+    onEvent: progress ? progressLogger("plan") : undefined,
   });
 
-  const runtime = createAgentRuntime({
-    model: buildModel(provider),
-    systemPrompt,
-    tools: [submitOutlineTool],
-    maxIterations: 6,
-    hooks: progress ? { onEvent: progressLogger("plan") } : undefined,
-  } satisfies AgentRuntimeConfig);
-
-  const result = await runtime.run(input);
-  if (result.status === "failed") {
-    throw new Error("Planner did not produce a valid course outline");
+  await agent.prompt(input);
+  if (!bridge.capped()) {
+    const error = agent.state.errorMessage;
+    if (error) throw new Error(error ?? "Planner did not produce a valid course outline");
   }
 
-  let outline = parseOutline(captured);
+  const { payload, parseError, hadFile } = await readStageFile(courseRoot, OUTLINE_FILE);
+  let outline = parseOutline(payload);
   if (outline && clamped !== null && outline.modules.length !== clamped) outline = null;
-  return { outline, called: captured !== null, payload: captured, outputText: result.outputText };
+  return { outline, payload, parseError, hadFile, outputText: lastAssistantText(agent) };
 }
 
-/** A one-line sketch of the payload for the final CLI error. */
+/** A one-line sketch of the file payload for the final CLI error. */
 function sketch(payload: unknown): string {
   try {
     const s = JSON.stringify(payload);
@@ -176,39 +183,39 @@ function sketch(payload: unknown): string {
   }
 }
 
+/** All validation/parse problems in a written file, for the retry note. */
+function fileErrors(payload: unknown, parseError: string | null): string[] {
+  if (parseError) return [parseError];
+  return outlineErrors(payload) ?? [];
+}
+
+/** Module count inside a written file; 0 when not parseable. */
+function outlineCount(payload: unknown): number {
+  if (typeof payload !== "object" || payload === null) return 0;
+  const modules = (payload as Record<string, unknown>).modules;
+  return Array.isArray(modules) ? modules.length : 0;
+}
+
 /** Run the plan stage: at most one retry before giving up on the outline. */
 export async function planCourse(opts: PlanOptions): Promise<CourseOutline> {
   const clamped = clampedCount(opts.moduleCountOverride);
   const systemPrompt = buildPlanSystemPrompt(clamped);
   const input = buildPlanInput(opts.prompt, opts.research);
 
-  const first = await runOutlineAttempt(opts.provider, systemPrompt, input, clamped, opts.progress);
+  const first = await runOutlineAttempt(opts.provider, opts.courseRoot, systemPrompt, input, clamped, opts.progress);
   if (first.outline) return first.outline;
 
-  const errors = first.called ? outlineErrors(first.payload) : null;
-  const clampNote = clamped !== null ? `\nThe course must have exactly ${clamped} modules (you delivered ${outlineCount(first.payload)}).` : "";
-  const note = errors
-    ? `\n\nYour previous submit_outline call was invalid:\n- ${errors.join("\n- ")}${clampNote}\nFix those fields and call submit_outline once with a valid outline.`
-    : `\n\nYour previous reply did not call submit_outline. Call submit_outline once with a valid outline ({ name, topic, modules: [{ id, title, concepts, difficulty }] })${clampNote}`;
-  const second = await runOutlineAttempt(opts.provider, systemPrompt, `${input}${note}`, clamped, opts.progress);
+  const firstErrors = fileErrors(first.payload, first.parseError);
+  const clampNote =
+    clamped !== null ? `\nThe course must have exactly ${clamped} modules (you wrote ${outlineCount(first.payload)}).` : "";
+  const note = firstErrors.length
+    ? `\n\nYour previous .lyceum/outline.json was invalid:\n- ${firstErrors.join("\n- ")}${clampNote}\nFix those fields and write the file again with a valid outline.`
+    : `\n\nYour previous reply did not write .lyceum/outline.json. Write it once via write_file with a valid outline ({ name, topic, modules: [{ id, title, concepts, difficulty }] })${clampNote}`;
+  const second = await runOutlineAttempt(opts.provider, opts.courseRoot, systemPrompt, `${input}${note}`, clamped, opts.progress);
   if (second.outline) return second.outline;
 
-  const emptyArgs =
-    second.called &&
-    typeof second.payload === "object" &&
-    second.payload !== null &&
-    Object.keys(second.payload as object).length === 0;
-  const why = second.called
-    ? `submit_outline payload still invalid: ${(outlineErrors(second.payload) ?? ["module count mismatch"]).join("; ")} (payload: ${sketch(second.payload)})`
-    : `the model finished without calling submit_outline; last output: ${JSON.stringify(second.outputText.slice(0, 200))}`;
-  throw new Error(
-    `Plan stage failed: ${why}${emptyArgs ? " — submit_outline arrived with empty arguments; your provider may be stripping tool-call arguments" : ""}`,
-  );
-}
-
-/** Module count inside a captured payload; 0 when not parseable. */
-function outlineCount(payload: unknown): number {
-  if (typeof payload !== "object" || payload === null) return 0;
-  const modules = (payload as Record<string, unknown>).modules;
-  return Array.isArray(modules) ? modules.length : 0;
+  const why = second.hadFile
+    ? `outline.json is still invalid: ${fileErrors(second.payload, second.parseError).join("; ")} (file: ${sketch(second.payload)})`
+    : `the model finished without writing .lyceum/outline.json; last output: ${JSON.stringify(second.outputText.slice(0, 200))}`;
+  throw new Error(`Plan stage failed: ${why}`);
 }

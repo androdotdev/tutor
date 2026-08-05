@@ -1,5 +1,6 @@
-import { createTool } from "@cline/shared";
+import { Type, type Static } from "@earendil-works/pi-ai";
 import { createInterface } from "node:readline/promises";
+import { jsonResult, type PiAgentTool } from "./pi-tool";
 
 /** Prompts the human for one line of input and returns their answer. */
 export type AskUserFn = (question: string) => Promise<string>;
@@ -10,31 +11,10 @@ export interface AskUserQA {
   answer: string;
 }
 
-/**
- * Shown when a model calls ask_user without a question (some models send
- * `{}`). Never block on stdin with a blank prompt.
- */
-export const FALLBACK_QUESTION = "What else should I know about the course you want?";
-
 /** Hard ceiling on ask_user invocations; matches the prompt's "0-3 total". */
 export const MAX_ASK_USER_CALLS = 3;
 
 /**
- * The fallback question text when the model sends `{}` with no topic
- * context; with a topic it names the course so the prompt is actually
- * useful. Never identical across calls: later ones count recorded answers.
- */
-function fallbackQuestion(topic: string | undefined, answered: number): string {
-  if (answered > 0) {
-    return `I've recorded ${answered} answer${answered === 1 ? "" : "s"}. What else should I know?`;
-  }
-  if (topic && topic.trim() !== "") {
-    const t = topic.trim();
-    return `What else should I know about your "${t.length > 48 ? `${t.slice(0, 48)}…` : t}" course?`;
-  }
-  return FALLBACK_QUESTION;
-}
-
 /**
  * Reads answers from the terminal with plain readline, which prints the
  * question as a normal text line and is visible on every terminal. Inquirer
@@ -44,15 +24,16 @@ function fallbackQuestion(topic: string | undefined, answered: number): string {
  */
 export function defaultPromptLine(): AskUserFn {
   return async (question: string): Promise<string> => {
-    const q = typeof question === "string" && question.trim() !== "" ? question : FALLBACK_QUESTION;
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     try {
-      return await rl.question(q);
+      return await rl.question(question);
     } finally {
       rl.close();
     }
   };
 }
+
+const askUserParams = Type.Object({ question: Type.String() });
 
 /**
  * The clarify stage's only tool: asks the human ONE clarifying question.
@@ -60,38 +41,33 @@ export function defaultPromptLine(): AskUserFn {
  * returns the full exchange list once the run is over.
  *
  * Bounds: at most `MAX_ASK_USER_CALLS` invocations (the 4th+ throws, which
- * the runtime feeds back to the model as a tool error, forcing a recap).
- * Missing/empty `question` args fall back to a topic-aware prompt so a model
- * that sends `{}` can never hang the terminal on a blank line.
+ * the loop feeds back to the model as a tool error, forcing a recap).
+ * `question` is required by the schema; the pi loop validates arguments
+ * before `execute` runs, so a missing/empty `{}` call never reaches the
+ * terminal.
  */
-export function createAskUserTool(promptLine: AskUserFn, topic?: string) {
+export function createAskUserTool(
+  promptLine: AskUserFn,
+): { tool: PiAgentTool<typeof askUserParams>; getQA: () => AskUserQA[] } {
   const qa: AskUserQA[] = [];
   let calls = 0;
-  const tool = createTool({
+  const tool: PiAgentTool<typeof askUserParams> = {
     name: "ask_user",
+    label: "Ask the human a clarifying question",
     description:
       "Ask the human ONE clarifying question about the course they want. Use sparingly (0-3 total); always pass the question text in the question argument, never empty.",
-    inputSchema: {
-      type: "object",
-      properties: { question: { type: "string" } },
-      required: ["question"],
-    },
-    execute: async (input: { question?: string }) => {
+    parameters: askUserParams,
+    execute: async (_toolCallId, input: Static<typeof askUserParams>) => {
       if (calls >= MAX_ASK_USER_CALLS) {
         throw new Error(
           `You already asked the maximum of ${MAX_ASK_USER_CALLS} clarifying questions. Do not call ask_user again; reply with your recap paragraph now.`,
         );
       }
       calls++;
-      const asked = input?.question;
-      const question =
-        typeof asked === "string" && asked.trim() !== ""
-          ? asked
-          : fallbackQuestion(topic, qa.length);
-      const answer = await promptLine(question);
-      qa.push({ question, answer });
-      return { ok: true, answer };
+      const answer = await promptLine(input.question);
+      qa.push({ question: input.question, answer });
+      return jsonResult({ ok: true, answer });
     },
-  });
+  };
   return { tool, getQA: () => qa.slice() };
 }

@@ -1,10 +1,11 @@
-import { createAgentRuntime, type AgentRuntimeConfig } from "@cline/agents";
-import type { AgentMessage, AgentRuntimeEvent } from "@cline/shared";
+import { Agent } from "@earendil-works/pi-agent-core";
+import type { Message } from "@earendil-works/pi-ai";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { isSpoiler, type ModuleDesc } from "@tutor/shared";
-import { buildModel, type ProviderSelection } from "@tutor/llms";
+import { buildModel, buildStreamFn, type ProviderSelection } from "@tutor/llms";
 import { buildTools } from "@tutor/core";
+import { attachPiBridge, lastAssistantText, type TutorRuntimeEvent } from "./pi-events";
 import { buildSystemPrompt, type ModuleContext } from "./policy";
 
 /** Per-file cap for context injected into the prompt. */
@@ -105,7 +106,34 @@ export interface TutorSession {
   /** Cancel any in-flight run. */
   abort(reason?: unknown): void;
   /** Subscribe to runtime events (assistant-text-delta, tool-finished, ...). */
-  subscribe(listener: (event: AgentRuntimeEvent) => void): () => void;
+  subscribe(listener: (event: TutorRuntimeEvent) => void): () => void;
+}
+
+const EMPTY_USAGE = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+/** Seed the model with the most recent history turns, in pi Message shape. */
+function seedMessages(turns: readonly HistoryTurn[], model: { provider: string; id: string }): Message[] {
+  return turns.slice(-HISTORY_SEED_TURNS).map((t) =>
+    t.who === "user"
+      ? { role: "user" as const, content: [{ type: "text" as const, text: t.text }], timestamp: t.ts }
+      : {
+          role: "assistant" as const,
+          content: [{ type: "text" as const, text: t.text }],
+          api: "openai-completions" as const,
+          provider: model.provider,
+          model: model.id,
+          usage: EMPTY_USAGE,
+          stopReason: "stop" as const,
+          timestamp: t.ts,
+        },
+  );
 }
 
 export function createTutorSession(opts: TutorSessionOptions): TutorSession {
@@ -114,20 +142,28 @@ export function createTutorSession(opts: TutorSessionOptions): TutorSession {
   // Resume: load the per-course history file, seed the most recent turns so
   // the coach actually has the context of the earlier conversation.
   const turns: HistoryTurn[] = opts.historyFile ? loadHistoryFile(opts.historyFile) : [];
-  const initialMessages: AgentMessage[] = turns.slice(-HISTORY_SEED_TURNS).map((t, i) => ({
-    id: `hist-${t.ts}-${i}`,
-    role: t.who,
-    content: [{ type: "text", text: t.text }],
-    createdAt: t.ts,
-  }));
+  const model = buildModel(opts.provider);
+  const initialMessages = seedMessages(turns, model);
 
-  const runtime = createAgentRuntime({
-    model: buildModel(opts.provider),
-    systemPrompt: buildSystemPrompt(opts.module, buildModuleContext(opts.courseRoot, opts.module), opts.userPrompt),
-    tools: [baseTools.run_tests, baseTools.read_file, baseTools.grep],
+  const agent = new Agent({
+    streamFn: buildStreamFn(opts.provider),
+    initialState: {
+      systemPrompt: buildSystemPrompt(opts.module, buildModuleContext(opts.courseRoot, opts.module), opts.userPrompt),
+      model,
+      thinkingLevel: "off",
+      tools: [baseTools.run_tests, baseTools.read_file, baseTools.grep],
+      messages: initialMessages,
+    },
+  });
+
+  // App-facing events fan out to every subscriber; the cap is enforced here.
+  const listeners = new Set<(event: TutorRuntimeEvent) => void>();
+  const bridge = attachPiBridge(agent, {
     maxIterations: opts.maxIterations ?? 8,
-    initialMessages: initialMessages.length ? initialMessages : undefined,
-  } satisfies AgentRuntimeConfig);
+    onEvent: (event) => {
+      for (const listener of listeners) listener(event);
+    },
+  });
 
   const persist = (turn: HistoryTurn): void => {
     if (!opts.historyFile) return;
@@ -136,35 +172,38 @@ export function createTutorSession(opts: TutorSessionOptions): TutorSession {
     saveHistoryFile(opts.historyFile, turns);
   };
 
-  let started = false;
-
   return {
     historyTurns: turns,
     async ask(input: string): Promise<string> {
-      let result;
+      let outputText: string;
       try {
-        result = started ? await runtime.continue(input) : await runtime.run(input);
-        started = true;
+        await agent.prompt(input);
+        if (bridge.capped()) {
+          // The cap aborted the loop after the last completed turn; the
+          // answer streamed before the abort is the deliverable.
+          outputText = lastAssistantText(agent);
+        } else {
+          const error = agent.state.errorMessage;
+          if (error) throw new Error(error);
+          outputText = lastAssistantText(agent);
+        }
       } catch (err) {
         // Keep the question even when the run itself blew up mid-flight.
         persist({ who: "user", text: input, ts: Date.now() });
         throw err;
       }
-      // @cline/agents resolves with status "failed" instead of rejecting for most
-      // loop errors; surface them so callers (TUI, CLI) can show a real message.
-      if (result.status === "failed") {
-        persist({ who: "user", text: input, ts: Date.now() });
-        throw new Error(result.error?.message ?? "coach run failed");
-      }
       persist({ who: "user", text: input, ts: Date.now() });
-      persist({ who: "assistant", text: result.outputText, ts: Date.now() });
-      return result.outputText;
+      persist({ who: "assistant", text: outputText, ts: Date.now() });
+      return outputText;
     },
-    abort(reason?: unknown) {
-      runtime.abort(reason);
+    abort() {
+      agent.abort();
     },
     subscribe(listener) {
-      return runtime.subscribe(listener);
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
     },
   };
 }

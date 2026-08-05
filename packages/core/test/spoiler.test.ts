@@ -7,6 +7,11 @@ import { join, sep } from "node:path";
 import { REDACTED_MESSAGE } from "@tutor/shared";
 import { resolveCourse } from "@tutor/shared";
 import { buildAuthorTools, buildTools } from "../src/tools";
+import type { PiAgentTool } from "../src/pi-tool";
+
+/** Run a pi tool and return its structured payload (details). */
+const call = async <T, R>(tool: PiAgentTool, params: T): Promise<R> =>
+  (await tool.execute("test-call", params as never)).details as R;
 
 const SECRET = "TOP_SECRET_TEACHER_COPY";
 
@@ -71,31 +76,31 @@ afterAll(() => {
 
 describe("read_file spoiler gate", () => {
   test("blocks solutions/01-all.js", async () => {
-    const r = await read_file.execute({ path: "modules/01-legacy/solutions/01-all.js" });
+    const r = await call(read_file, { path: "modules/01-legacy/solutions/01-all.js" });
     expect(r.blocked).toBe(true);
     expect(r.message).toContain("REDACTED");
   });
 
   test("blocks modern solutions/01-all.js", async () => {
-    const r = await read_file.execute({ path: "modules/02-modern/solutions/01-all.js" });
+    const r = await call(read_file, { path: "modules/02-modern/solutions/01-all.js" });
     expect(r.blocked).toBe(true);
     expect(r.message).toBe(REDACTED_MESSAGE);
   });
 
   test("blocks legacy project/solution.js", async () => {
-    const r = await read_file.execute({ path: "modules/01-legacy/project/solution.js" });
+    const r = await call(read_file, { path: "modules/01-legacy/project/solution.js" });
     expect(r.blocked).toBe(true);
     expect(r.message).toBe(REDACTED_MESSAGE);
   });
 
   test("blocks modern project/solution.js", async () => {
-    const r = await read_file.execute({ path: "modules/02-modern/project/solution.js" });
+    const r = await call(read_file, { path: "modules/02-modern/project/solution.js" });
     expect(r.blocked).toBe(true);
     expect(r.message).toBe(REDACTED_MESSAGE);
   });
 
   test("blocks a symlink pointing at a solution", async () => {
-    const r = await read_file.execute({ path: "modules/01-legacy/exercises/peek.js" });
+    const r = await call(read_file, { path: "modules/01-legacy/exercises/peek.js" });
     expect(r.blocked).toBe(true);
     expect(r.message).toBe(REDACTED_MESSAGE);
   });
@@ -106,17 +111,17 @@ describe("read_file spoiler gate", () => {
     // startsWith check (that is the exact regression this test guards).
     const abs = join(root, escape);
     expect(abs.startsWith(root)).toBe(true);
-    const r = await read_file.execute({ path: escape });
+    const r = await call(read_file, { path: escape });
     expect(r.blocked).toBe(true);
   });
 
   test("blocks absolute-path escapes", async () => {
-    const r = await read_file.execute({ path: "../../../../../../etc/hostname" });
+    const r = await call(read_file, { path: "../../../../../../etc/hostname" });
     expect(r.blocked).toBe(true);
   });
 
   test("returns normal student files", async () => {
-    const r = await read_file.execute({ path: "modules/01-legacy/exercises/student.js" });
+    const r = await call(read_file, { path: "modules/01-legacy/exercises/student.js" });
     expect(r.blocked).toBeFalsy();
     expect(r.content).toBe("student code");
   });
@@ -124,7 +129,7 @@ describe("read_file spoiler gate", () => {
 
 describe("write_file spoiler gate (author mode)", () => {
   test("blocks overwriting project/solution.js", async () => {
-    const r = await write_file.execute({
+    const r = await call(write_file, {
       path: "modules/01-legacy/project/solution.js",
       content: "clobbered",
     });
@@ -133,7 +138,7 @@ describe("write_file spoiler gate (author mode)", () => {
   });
 
   test("blocks writing into solutions/", async () => {
-    const r = await write_file.execute({
+    const r = await call(write_file, {
       path: "modules/01-legacy/solutions/new-file.js",
       content: "clobbered",
     });
@@ -141,7 +146,7 @@ describe("write_file spoiler gate (author mode)", () => {
   });
 
   test("blocks writing through a symlink", async () => {
-    const r = await write_file.execute({
+    const r = await call(write_file, {
       path: "modules/01-legacy/exercises/peek.js",
       content: "clobbered",
     });
@@ -150,7 +155,7 @@ describe("write_file spoiler gate (author mode)", () => {
   });
 
   test("blocks traversal writes outside the course", async () => {
-    const r = await write_file.execute({
+    const r = await call(write_file, {
       path: join("..", sibling.split(sep)[sibling.split(sep).length - 1], "modules", "01-x", "tests", "index.test.js"),
       content: "clobbered",
     });
@@ -158,7 +163,7 @@ describe("write_file spoiler gate (author mode)", () => {
   });
 
   test("writes normal course files, creating parent dirs", async () => {
-    const r = await write_file.execute({
+    const r = await call(write_file, {
       path: "modules/01-legacy/exercises/new/deep/student2.js",
       content: "fresh",
     });
@@ -169,7 +174,7 @@ describe("write_file spoiler gate (author mode)", () => {
 
 describe("grep spoiler gate", () => {
   test("finds matches in normal course files", async () => {
-    const r = await grep.execute({ pattern: "student code" });
+    const r = await call(grep, { pattern: "student code" });
     expect(r.ok).toBe(true);
     expect(r.matches.some((m) => m.includes("modules/01-legacy/exercises/student.js:1"))).toBe(true);
     expect(r.matches.some((m) => m.includes("modules/02-modern/exercise/index.js:1"))).toBe(true);
@@ -178,19 +183,19 @@ describe("grep spoiler gate", () => {
   test("never searches solutions/ or project solution stubs", async () => {
     // SECRET lives ONLY in solutions/ and project/solution.js files — including
     // through the innocent-looking symlink exercises/peek.js.
-    const r = await grep.execute({ pattern: SECRET });
+    const r = await call(grep, { pattern: SECRET });
     expect(r.ok).toBe(true);
     expect(r.matches[0]).toBe("no matches (solutions/ is never searched)");
   });
 
   test("never reports matches outside the course root", async () => {
-    const r = await grep.execute({ pattern: "SIBLING_STUDENT" });
+    const r = await call(grep, { pattern: "SIBLING_STUDENT" });
     expect(r.ok).toBe(true);
     expect(r.matches[0]).toBe("no matches (solutions/ is never searched)");
   });
 
   test("reports invalid regex instead of crashing", async () => {
-    const r = await grep.execute({ pattern: "(" });
+    const r = await call(grep, { pattern: "(" });
     expect(r.ok).toBe(false);
     expect(r.message).toContain("invalid regex");
   });

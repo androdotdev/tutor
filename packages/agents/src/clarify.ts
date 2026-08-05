@@ -1,11 +1,12 @@
-import { createAgentRuntime, type AgentRuntimeConfig } from "@cline/agents";
-import { buildModel, type ProviderSelection } from "@tutor/llms";
+import { Agent } from "@earendil-works/pi-agent-core";
+import { buildModel, buildStreamFn, type ProviderSelection } from "@tutor/llms";
 import {
   createAskUserTool,
   defaultPromptLine,
   type AskUserFn,
   type AskUserQA,
 } from "@tutor/core";
+import { attachPiBridge, lastAssistantText } from "./pi-events";
 import { progressLogger } from "./progress";
 
 export interface ClarifyOptions {
@@ -31,20 +32,27 @@ function buildClarifyPrompt(): string {
 
 /** Runs the clarify stage: ask the human a few questions, then get a recap. */
 export async function runClarify(opts: ClarifyOptions): Promise<ClarifyResult> {
-  const { tool, getQA } = createAskUserTool(opts.askUser ?? defaultPromptLine(), opts.prompt);
-  const runtime = createAgentRuntime({
-    model: buildModel(opts.provider),
-    systemPrompt: buildClarifyPrompt(),
-    tools: [tool],
+  const { tool, getQA } = createAskUserTool(opts.askUser ?? defaultPromptLine());
+  const agent = new Agent({
+    streamFn: buildStreamFn(opts.provider),
+    initialState: {
+      systemPrompt: buildClarifyPrompt(),
+      model: buildModel(opts.provider),
+      thinkingLevel: "off",
+      tools: [tool],
+    },
+  });
+  const bridge = attachPiBridge(agent, {
     maxIterations: MAX_CLARIFY_ITERATIONS,
-    hooks: opts.progress ? { onEvent: progressLogger("clarify") } : undefined,
-  } satisfies AgentRuntimeConfig);
+    onEvent: opts.progress ? progressLogger("clarify") : undefined,
+  });
 
-  const result = await runtime.run(opts.prompt);
-  if (result.status === "failed") {
-    throw new Error(result.error?.message ?? "clarify run failed");
+  await agent.prompt(opts.prompt);
+  if (!bridge.capped()) {
+    const error = agent.state.errorMessage;
+    if (error) throw new Error(error ?? "clarify run failed");
   }
-  const recap = result.outputText;
+  const recap = lastAssistantText(agent);
   if (recap.trim() === "") {
     throw new Error("clarify produced no recap");
   }
