@@ -1,9 +1,10 @@
-// Planner stage tests: mock-SSE outline handoff (the model writes
-// .lyceum/outline.json via write_file; the stage reads + validates it on real
-// disk), covering round-trip, retry, hard failure, and module cap, plus
-// course-plan checkpoint file round-trips.
+// Planner stage tests: mock-SSE module-wise plan handoff (the model writes
+// .lyceum/outline.json = { name, topic } then ONE .lyceum/modules/<id>.json per
+// module; the stage assembles + validates on real disk), covering round-trip,
+// retry, hard failure, text-outline rescue, and module cap, plus course-plan
+// checkpoint file round-trips.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { planCourse } from "../src/planner.ts";
@@ -79,19 +80,22 @@ afterAll(() => {
   }
 });
 
-/** The model's delivery channel: a write_file turn carrying the outline JSON. */
-function writeOutline(args: unknown): ScriptTurn {
-  return {
-    tool: {
-      name: "write_file",
-      args: { path: ".lyceum/outline.json", content: JSON.stringify(args) },
+/** The model's module-wise delivery: metadata first, then one file per module. */
+function writePlan(outline: CourseOutline): ScriptTurn[] {
+  return [
+    {
+      tool: {
+        name: "write_file",
+        args: { path: ".lyceum/outline.json", content: JSON.stringify({ name: outline.name, topic: outline.topic }) },
+      },
     },
-  };
-}
-
-/** Fresh slate: a stale outline file from a previous test must not leak in. */
-function resetOutline(): void {
-  rmSync(join(courseRoot, ".lyceum"), { recursive: true, force: true });
+    ...outline.modules.map((m) => ({
+      tool: {
+        name: "write_file",
+        args: { path: `.lyceum/modules/${m.id}.json`, content: JSON.stringify(m) },
+      },
+    })),
+  ];
 }
 
 const provider = () => ({
@@ -103,7 +107,7 @@ const provider = () => ({
 });
 
 describe("planCourse", () => {
-  test("returns the written outline exactly, sources included", async () => {
+  test("assembles the module-wise outline exactly, sources included", async () => {
     const outline: CourseOutline = {
       name: "Bun Foundations",
       topic: "learn the bun runtime end to end",
@@ -124,9 +128,8 @@ describe("planCourse", () => {
         },
       ],
     };
-    script = [writeOutline(outline), { content: "done" }];
+    script = [...writePlan(outline), { content: "done" }];
     callCount = 0;
-    resetOutline();
 
     const result = await planCourse({ provider: provider(), prompt: "learn the bun runtime end to end", courseRoot });
 
@@ -143,9 +146,8 @@ describe("planCourse", () => {
         { id: "02", title: "Compose", concepts: ["services", "volumes"], difficulty: "core" },
       ],
     };
-    script = [writeOutline(outline), { content: "done" }];
+    script = [...writePlan(outline), { content: "done" }];
     callCount = 0;
-    resetOutline();
 
     const result = await planCourse({
       provider: provider(),
@@ -175,7 +177,7 @@ describe("planCourse", () => {
     expect(user).toContain("https://docs.docker.com/build/cache/");
   });
 
-  test("retries once when the first reply writes no outline file", async () => {
+  test("retries once when the first reply writes no files", async () => {
     const outline: CourseOutline = {
       name: "Git Essentials",
       topic: "version control with git",
@@ -184,24 +186,54 @@ describe("planCourse", () => {
         { id: "02", title: "Branches and Merges", concepts: ["branch", "merge", "conflicts"], difficulty: "core" },
       ],
     };
-    script = [{ content: "Let me think about the structure first." }, writeOutline(outline), { content: "done" }];
+    script = [{ content: "Let me think about the structure first." }, ...writePlan(outline), { content: "done" }];
     callCount = 0;
-    resetOutline();
 
     const result = await planCourse({ provider: provider(), prompt: "version control with git", courseRoot });
 
     expect(result).toEqual(outline);
   });
 
-  test("throws when the model never writes a valid outline", async () => {
+  test("rescues a model that delivers the whole outline as text, not files", async () => {
+    // The reported failure: the planner over-thinks, never calls write_file,
+    // and dumps the complete outline in its final message. The stage must
+    // parse that text, persist it module-wise, and return it.
+    const outline: CourseOutline = {
+      name: "HTTP Fundamentals",
+      topic: "http fundamentals",
+      modules: [
+        { id: "01", title: "Requests", concepts: ["methods", "headers"], difficulty: "intro" },
+        { id: "02", title: "Responses", concepts: ["status codes", "bodies"], difficulty: "core" },
+        { id: "03", title: "Servers", concepts: ["routing", "middleware"], difficulty: "capstone" },
+      ],
+    };
+    script = [
+      {
+        content: `Here is the complete outline I designed:\n\`\`\`json\n${JSON.stringify(outline, null, 2)}\n\`\`\`\nEvery module ramps in difficulty.`,
+      },
+    ];
+    callCount = 0;
+
+    const result = await planCourse({ provider: provider(), prompt: "http fundamentals", courseRoot });
+
+    expect(result).toEqual(outline);
+    // The rescued outline is persisted module-wise on disk, like a file-written plan.
+    expect(existsSync(join(courseRoot, ".lyceum", "outline.json"))).toBe(true);
+    for (const m of outline.modules) {
+      expect(existsSync(join(courseRoot, ".lyceum", "modules", `${m.id}.json`))).toBe(true);
+    }
+  });
+
+  test("throws when the model never writes files and its text has no outline", async () => {
     script = [
       { content: "No tools here, just text." },
       { content: "Still refusing to call write_file." },
     ];
     callCount = 0;
-    resetOutline();
 
-    await expect(planCourse({ provider: provider(), prompt: "anything", courseRoot })).rejects.toThrow(/Plan stage failed: the model finished without writing \.lyceum\/outline\.json/);
+    await expect(planCourse({ provider: provider(), prompt: "anything", courseRoot })).rejects.toThrow(
+      /Plan stage failed: the model finished without writing/,
+    );
   });
 
   test("moduleCountOverride requires an exact module count, retrying on mismatch", async () => {
@@ -222,13 +254,35 @@ describe("planCourse", () => {
         { id: "04", title: "Caching", concepts: ["etags", "cache headers"], difficulty: "capstone" },
       ],
     };
-    script = [writeOutline(short), writeOutline(exact)];
+    script = [...writePlan(short), ...writePlan(exact), { content: "done" }];
     callCount = 0;
-    resetOutline();
 
     const result = await planCourse({ provider: provider(), prompt: "http fundamentals", courseRoot, moduleCountOverride: 4 });
 
     expect(result.modules).toHaveLength(4);
+  });
+
+  test("a partial module set on disk never assembles from stale files alone", async () => {
+    // Write a stale 2-module set by hand, then have the model write nothing:
+    // the stage must NOT treat the stale files as this run's plan.
+    const stale: CourseOutline = {
+      name: "Stale",
+      topic: "stale topic",
+      modules: [
+        { id: "01", title: "Old One", concepts: ["x"], difficulty: "intro" },
+        { id: "02", title: "Old Two", concepts: ["y"], difficulty: "core" },
+      ],
+    };
+    for (const m of stale.modules) {
+      mkdirSync(join(courseRoot, ".lyceum", "modules"), { recursive: true });
+      writeFileSync(join(courseRoot, ".lyceum", "modules", `${m.id}.json`), JSON.stringify(m), "utf8");
+    }
+    script = [{ content: "I have no plan." }];
+    callCount = 0;
+
+    await expect(planCourse({ provider: provider(), prompt: "anything", courseRoot })).rejects.toThrow(
+      /Plan stage failed/,
+    );
   });
 });
 

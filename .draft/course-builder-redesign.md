@@ -2,7 +2,11 @@
 
 Status: research draft → **P0 (Option A) landed 2026-08-05** on `feat/pi-migration`
 (research → `.lyceum/research.json`, plan → `.lyceum/outline.json`, both via
-`write_file`; `submit_findings`/`submit_outline` deleted). Remaining phases P1
+`write_file`; `submit_findings`/`submit_outline` deleted). **2026-08-05 (main):
+plan handoff refined to MODULE-WISE delivery** — `.lyceum/outline.json` carries
+only `{ name, topic }` and each module is its own `.lyceum/modules/<id>.json`;
+a complete outline delivered as final TEXT is parsed and persisted stage-side
+(no more "planned but never wrote the file" failures). Remaining phases P1
 (test-verified status, parallel authoring, health beacon ✓ already shipped via
 stash), P2 (hybrid fallback, per-file resume, plan.md) not started.
 
