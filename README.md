@@ -82,7 +82,7 @@ reference).
 | `lyceum new <course-name> [--dir <path>]` | Generate a course: clarify → research → plan → author every module |
 | `lyceum new --stub [--dir <path>]` | Scaffold an empty course (no LLM) |
 | `lyceum list` | List the course modules |
-| `lyceum test [module]` | Run a module's tests headlessly |
+| `lyceum setup` | Write the user config to the XDG config dir (interactive) |
 | `lyceum provider` | Show the resolved LLM provider |
 
 See [packages/cli/README.md](packages/cli/README.md) for the full CLI reference

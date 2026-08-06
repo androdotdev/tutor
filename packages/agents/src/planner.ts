@@ -16,7 +16,7 @@ import { buildAuthorTools } from "@tutor/core";
 import { buildModel, buildStreamFn, type ProviderSelection } from "@tutor/llms";
 import type { CourseOutline, ModuleDifficulty, PlannedModule, ResearchReport } from "./pipeline-types.ts";
 import { attachPiBridge, lastAssistantText } from "./pi-events";
-import { progressLogger } from "./progress";
+import { stageSink } from "./progress";
 
 export interface PlanOptions {
   provider: ProviderSelection;
@@ -27,6 +27,8 @@ export interface PlanOptions {
   moduleCountOverride?: number;
   /** Stream the model's reasoning/text and log tool calls to stdout. */
   progress?: boolean;
+  /** Append the full stream to this file (lyceum new --log). */
+  logFile?: string;
 }
 
 const DIFFICULTIES = ["intro", "core", "capstone"] as const;
@@ -325,6 +327,7 @@ async function runOutlineAttempt(
   input: string,
   clamped: number | null,
   progress?: boolean,
+  logFile?: string,
 ): Promise<{ outline: CourseOutline | null; errors: string[]; present: string[]; outputText: string }> {
   const { write_file } = buildAuthorTools({ courseRoot, modules: [] });
   const agent = new Agent({
@@ -340,7 +343,7 @@ async function runOutlineAttempt(
     // meta + one file per module (up to 8) + final reply; a cap here would
     // silently truncate a full 8-module plan.
     maxIterations: 16,
-    onEvent: progress ? progressLogger("plan") : undefined,
+    onEvent: stageSink("plan", { progress, logFile }),
   });
 
   await agent.prompt(input);
@@ -380,7 +383,7 @@ async function runPlanStage(opts: PlanOptions): Promise<CourseOutline> {
   const input = buildPlanInput(opts.prompt, opts.research);
   await clearStageFiles(opts.courseRoot);
 
-  const first = await runOutlineAttempt(opts.provider, opts.courseRoot, systemPrompt, input, clamped, opts.progress);
+  const first = await runOutlineAttempt(opts.provider, opts.courseRoot, systemPrompt, input, clamped, opts.progress, opts.logFile);
   if (first.outline) return first.outline;
 
   // The model planned in prose instead of files: accept a complete outline from
@@ -398,7 +401,7 @@ async function runPlanStage(opts: PlanOptions): Promise<CourseOutline> {
       ? `\nModule files already on disk: ${first.present.join(", ")} — keep them, write the missing module files and fix the invalid ones.`
       : "\nWrite .lyceum/outline.json ({ name, topic }) and then one .lyceum/modules/<id>.json per module, using the write_file tool.",
   ].join("\n");
-  const second = await runOutlineAttempt(opts.provider, opts.courseRoot, systemPrompt, `${input}${note}`, clamped, opts.progress);
+  const second = await runOutlineAttempt(opts.provider, opts.courseRoot, systemPrompt, `${input}${note}`, clamped, opts.progress, opts.logFile);
   if (second.outline) return second.outline;
 
   const textOutline = extractOutlineFromText(second.outputText) ?? (second.present.length === 0 ? extractOutlineFromText(first.outputText) : null);

@@ -11,7 +11,7 @@ import { buildAuthorTools, type PiAgentTool } from "@tutor/core";
 import { buildModel, buildStreamFn, type ProviderSelection } from "@tutor/llms";
 import type { ResearchFinding, ResearchReport } from "./pipeline-types";
 import { attachPiBridge, lastAssistantText } from "./pi-events";
-import { progressLogger } from "./progress";
+import { stageSink } from "./progress";
 
 export interface ResearchOptions {
   provider: ProviderSelection;
@@ -21,6 +21,8 @@ export interface ResearchOptions {
   webSearchTool: PiAgentTool;
   /** Stream the model's reasoning/text and log tool calls to stdout. */
   progress?: boolean;
+  /** Append the full stream to this file (lyceum new --log). */
+  logFile?: string;
 }
 
 const MAX_RESEARCH_ITERATIONS = 12;
@@ -133,7 +135,7 @@ async function attempt(
   });
   const bridge = attachPiBridge(agent, {
     maxIterations: MAX_RESEARCH_ITERATIONS,
-    onEvent: opts.progress ? progressLogger("research") : undefined,
+    onEvent: stageSink("research", { progress: opts.progress, logFile: opts.logFile }),
   });
 
   await agent.prompt(prompt);

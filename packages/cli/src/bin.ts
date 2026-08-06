@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 import { Command, CommanderError } from "commander";
-import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { resolveCourse, findModule, type ModuleDesc } from "@tutor/shared";
 import { resolveProvider, type ProviderSelection } from "@tutor/llms";
 import {
   buildCourse,
   createAuthorSession,
+  fileLogger,
   loadCoursePlan,
   newCoursePlan,
   planCourse,
@@ -20,6 +20,7 @@ import {
 import { addModule, buildAuthorTools, scaffoldCourse } from "@tutor/core";
 import { findCourseRoot } from "./root";
 import { loadUserConfig } from "./config";
+import { runSetup } from "./setup";
 
 const userConfig = loadUserConfig();
 
@@ -87,7 +88,12 @@ program.action(() => {
 });
 
 /** Append mode: author ONE module by title (find-or-create). Old add/draft logic. */
-async function authorSingleModule(courseRoot: string, title: string, provider: ProviderSelection): Promise<void> {
+async function authorSingleModule(
+  courseRoot: string,
+  title: string,
+  provider: ProviderSelection,
+  logFile?: string,
+): Promise<void> {
   let modules = await resolveCourse(courseRoot);
   let module = (await findModule(modules, title)) ?? null;
   if (!module) {
@@ -106,6 +112,7 @@ async function authorSingleModule(courseRoot: string, title: string, provider: P
       }
     }
   });
+  if (logFile) session.subscribe(fileLogger(logFile));
   const task = `Author the module now. Title: "${module.title}". Module dir: ${module.dir}.
 Follow the order in the policy: tests first, then exercise stub, then README, then run_tests to verify the grader loads. Finish with a summary of what the learner must implement.`;
   console.log(`authoring ${module.dir}…`);
@@ -132,10 +139,11 @@ program
   .option("--yes", "skip clarifying questions")
   .option("--stub", "scaffold empty modules only (no LLM)")
   .option("--no-research", "skip the web research stage")
+  .option("--log", "capture the full model stream to .lyceum/new.log (dev/testing)")
   .action(
     async (
       promptArgs: string[] | undefined,
-      opts: { dir?: string; name?: string; topic?: string; modules?: string; yes?: boolean; stub?: boolean; research?: boolean },
+      opts: { dir?: string; name?: string; topic?: string; modules?: string; yes?: boolean; stub?: boolean; research?: boolean; log?: boolean },
     ) => {
       // Variadic positionals are joined into ONE prompt: `lyceum new make a
       // docker course` must not become prompt="make", dir="a" with the rest
@@ -143,6 +151,9 @@ program
       const prompt = (promptArgs ?? []).join(" ");
       const targetDir = opts.dir ?? process.cwd();
       const moduleCount = opts.modules ? Number(opts.modules) : undefined;
+
+      // --log: fresh .lyceum/new.log per run, appended by every stage.
+      const logFile = opts.log ? openLogFile(targetDir) : undefined;
 
       // --stub: deterministic scaffold, no LLM. Course directory is --dir (or
       // cwd); a positional is the prompt and is ignored here.
@@ -178,6 +189,7 @@ program
           outline: existingPlan.outline,
           prompt,
           progress: true,
+          logFile,
         });
         printBuildSummary(result, existingPlan.outline.modules.length);
         if (result.failed.length) throw new CliError(`${result.failed.length} module(s) failed — re-run lyceum new to resume`);
@@ -187,7 +199,7 @@ program
       // Append mode: an existing modules/ dir + a title = author ONE module
       // (old `add`/`draft` semantics folded into `new`).
       if (existsSync(join(targetDir, "modules"))) {
-        await authorSingleModule(targetDir, prompt, provider);
+        await authorSingleModule(targetDir, prompt, provider, logFile);
         return;
       }
 
@@ -196,7 +208,7 @@ program
       if (!opts.yes) {
         console.log("clarifying…");
         console.log("waiting for model…"); // first-token latency can be long; never a silent hang
-        const { recap } = await runClarify({ provider, prompt, progress: true });
+        const { recap } = await runClarify({ provider, prompt, progress: true, logFile });
         context = `${prompt}\n\nClarified: ${recap}`;
       }
 
@@ -207,7 +219,7 @@ program
         console.log("researching…");
         console.log("waiting for model…");
         const { web_search } = buildAuthorTools({ courseRoot: targetDir, modules: [] });
-        research = await runResearch({ provider, prompt: context, courseRoot: targetDir, webSearchTool: web_search, progress: true });
+        research = await runResearch({ provider, prompt: context, courseRoot: targetDir, webSearchTool: web_search, progress: true, logFile });
       }
 
       // 3. Plan.
@@ -220,6 +232,7 @@ program
         research,
         moduleCountOverride: moduleCount,
         progress: true,
+        logFile,
       });
       saveCoursePlan(newCoursePlan(targetDir, prompt, outline));
       console.log(`planned ${outline.modules.length} modules: ${outline.modules.map((m) => m.title).join(", ")}`);
@@ -227,7 +240,7 @@ program
       // 4. Author every module (continue-on-error; resume via the checkpoint).
       console.log("authoring…");
       console.log("waiting for model…");
-      const result = await buildCourse({ provider, courseRoot: targetDir, outline, prompt, progress: true });
+      const result = await buildCourse({ provider, courseRoot: targetDir, outline, prompt, progress: true, logFile });
       printBuildSummary(result, outline.modules.length);
       if (result.failed.length) throw new CliError(`${result.failed.length} module(s) failed — re-run lyceum new to resume`);
       console.log(`Open it:  cd ${targetDir} && lyceum`);
@@ -251,37 +264,22 @@ program
   });
 
 program
-  .command("test")
-  .description("run a module's tests (headless)")
-  .argument("[module]", "module id, directory, or title; default: all modules")
-  .action(async (moduleArg?: string) => {
-    const { courseRoot, modules } = await loadCourse();
-    const target = moduleArg?.trim();
-    let sel: ModuleDesc[];
-    if (target) {
-      const m = await findModule(modules, target);
-      sel = m ? [m] : [];
-    } else {
-      sel = modules;
-    }
-    if (!sel.length) throw new CliError(`no module matches "${target}"`);
-    for (const m of sel) {
-      if (!m.testTargets.length) {
-        console.log(`${m.id} ${m.title}: no test targets`);
-        continue;
-      }
-      console.log(`${m.id} ${m.title}`);
-      const { code } = await run(courseRoot, "bun", ["test", ...m.testTargets]);
-      if (code !== 0) throw new CliError(`tests failed for ${m.id}`, code);
-    }
-  });
-
-program
   .command("provider")
   .description("show the resolved LLM provider")
   .action(() => {
     const p = resolveProvider(userConfig.provider);
     console.log(p ? `provider=${p.label} model=${p.modelId} base=${p.baseUrl}` : "none configured");
+  });
+
+program
+  .command("setup")
+  .description("write the user config to the XDG config dir (~/.config/lyceum/config.json)")
+  .action(async () => {
+    const config = await runSetup();
+    const fresh = loadUserConfig();
+    const p = resolveProvider(fresh.provider);
+    console.log(`wrote ${config.dir}/config.json`);
+    console.log(p ? `resolved provider: ${p.label} model=${p.modelId} base=${p.baseUrl}` : "resolved provider: none (env vars win over config)");
   });
 
 async function main(): Promise<void> {
@@ -306,14 +304,11 @@ async function main(): Promise<void> {
 
 void main();
 
-interface RunResult {
-  code: number;
-  out: string;
-}
-function run(cwd: string, cmd: string, args: string[]): Promise<RunResult> {
-  const { promise, resolve } = Promise.withResolvers<RunResult>();
-  const child = spawn(cmd, args, { cwd, stdio: ["ignore", "inherit", "inherit"] });
-  child.on("close", (code) => resolve({ code: code ?? -1, out: "" }));
-  child.on("error", (err) => resolve({ code: -1, out: err.message }));
-  return promise;
+/** --log: truncate (or create) .lyceum/new.log for full-stream capture. */
+function openLogFile(courseRoot: string): string {
+  const dir = join(courseRoot, ".lyceum");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "new.log");
+  writeFileSync(path, ""); // fresh run = fresh log
+  return path;
 }

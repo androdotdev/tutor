@@ -10,7 +10,7 @@ import { resolveCourse } from "@tutor/shared";
 import type { ProviderSelection } from "@tutor/llms";
 import { createPolishTool } from "./polish";
 import { createAuthorSession } from "./author";
-import { progressLogger } from "./progress";
+import { stageSink } from "./progress";
 import { loadCoursePlan, newCoursePlan, markModule } from "./plan-file";
 import type { CoursePlanFile, CourseOutline } from "./pipeline-types";
 
@@ -21,6 +21,8 @@ export interface BuildCourseOptions {
   prompt: string;
   /** Stream each module session's reasoning/text and log tool calls to stdout. */
   progress?: boolean;
+  /** Append the full stream to this file (lyceum new --log). */
+  logFile?: string;
 }
 
 export interface BuildCourseResult {
@@ -95,7 +97,8 @@ export async function buildCourse(opts: BuildCourseOptions): Promise<BuildCourse
         provider,
         extraTools: [polishTool],
       });
-      if (opts.progress) session.subscribe(progressLogger("build"));
+      const sink = stageSink("build", { progress: opts.progress, logFile: opts.logFile });
+      if (sink) session.subscribe(sink);
       const task =
         `Author the module "${m.title}". Concepts to cover: ${m.concepts.join("; ")}. ` +
         `Sources to cite: ${(m.sources ?? []).join(", ")}`;

@@ -7,7 +7,7 @@ import {
   type AskUserQA,
 } from "@tutor/core";
 import { attachPiBridge, lastAssistantText } from "./pi-events";
-import { progressLogger } from "./progress";
+import { stageSink } from "./progress";
 
 export interface ClarifyOptions {
   provider: ProviderSelection;
@@ -15,6 +15,8 @@ export interface ClarifyOptions {
   askUser?: AskUserFn;
   /** Stream the model's reasoning/text and log tool calls to stdout. */
   progress?: boolean;
+  /** Append the full stream to this file (lyceum new --log). */
+  logFile?: string;
 }
 
 export interface ClarifyResult {
@@ -44,7 +46,7 @@ export async function runClarify(opts: ClarifyOptions): Promise<ClarifyResult> {
   });
   const bridge = attachPiBridge(agent, {
     maxIterations: MAX_CLARIFY_ITERATIONS,
-    onEvent: opts.progress ? progressLogger("clarify") : undefined,
+    onEvent: stageSink("clarify", { progress: opts.progress, logFile: opts.logFile }),
   });
 
   await agent.prompt(opts.prompt);

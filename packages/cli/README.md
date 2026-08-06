@@ -80,7 +80,14 @@ Options:
 | `--modules <n>` | Override the planned module count (2–8) |
 | `--yes` | Skip clarifying questions |
 | `--no-research` | Skip the web research stage |
+| `--log` | Capture the full model stream to `.lyceum/new.log` (dev/testing) |
 | `--stub` | Scaffold an empty course (no LLM) at `--dir` or cwd |
+
+`--log` appends the raw stream of every stage (clarify, research, plan, and
+each author session) to `.lyceum/new.log`: reasoning and answer text verbatim,
+every tool call with its arguments and outcome, and each run's finish reason —
+a fresh file per run, for debugging model behavior. It works in fresh, resume,
+and append-mode runs.
 
 **Resume** — re-running the same command rebuilds only modules still
 pending/failed; a fully drafted plan is a no-op. A different prompt in a
@@ -94,11 +101,15 @@ prompt is the new module's title (`lyceum new Query params`).
 
 List the course's modules (id, title, topic) and the course root.
 
-### `lyceum test [module]`
+### `lyceum setup`
 
-Run a module's tests headlessly and print the output. With no argument, runs
-every module. The tests are the sole authority on whether an exercise passes —
-the coach itself never grades.
+Interactively write the user config to the XDG config dir
+(`$XDG_CONFIG_HOME/lyceum/config.json`, default `~/.config/lyceum/config.json`):
+API key, base URL, model, and default course directory. Current values are
+shown as defaults, so re-running updates in place; `system-prompt.md` and other
+existing settings are preserved. `lyceum provider` afterwards shows the
+resolved result — remember env vars (`OPENAI_API_KEY`, `OPENAI_BASE_URL`,
+`TUTOR_MODEL`, `OLLAMA_HOST`) still win over the config file.
 
 ### `lyceum provider`
 
