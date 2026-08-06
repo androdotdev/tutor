@@ -47,4 +47,16 @@ describe("fileLogger", () => {
     expect(readFileSync(path, "utf8")).toBe("hello");
     rmSync(join(path, ".."), { recursive: true, force: true });
   });
+
+  test("a failing append is swallowed: logging never aborts the run", () => {
+    // A directory path makes appendFileSync throw EISDIR on every write; the
+    // logger must keep going (best-effort) instead of throwing.
+    const dir = mkdtempSync(join(tmpdir(), "lyceum-log-"));
+    const log = fileLogger(join(dir, "sub", "new.log")); // mkdir succeeds
+    log({ type: "assistant-text-delta", text: "x" });
+    expect(() => fileLogger(dir) /* EISDIR on append */).not.toThrow();
+    const doomed = fileLogger(dir);
+    expect(() => doomed({ type: "assistant-text-delta", text: "y" })).not.toThrow();
+    rmSync(dir, { recursive: true, force: true });
+  });
 });

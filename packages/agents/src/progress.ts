@@ -50,31 +50,43 @@ export function progressLogger(label: string): (event: TutorRuntimeEvent) => voi
  * (the accumulated "thinking"), each tool call with its args and outcome, and
  * the run's finish reason / failure. Sync writes so the log is complete even
  * when the process exits right after the run.
+ *
+ * Appends are best-effort: a log write failing (disk full, permissions) must
+ * not abort the pipeline run — the log is dev tooling, the build is the
+ * deliverable. The directory itself is created eagerly (mkdirSync throws), so
+ * an unwritable .lyceum fails fast at first use instead of silently.
  */
 export function fileLogger(path: string): (event: TutorRuntimeEvent) => void {
   mkdirSync(dirname(path), { recursive: true });
   return (event) => {
+    const append = (text: string): void => {
+      try {
+        appendFileSync(path, text);
+      } catch {
+        /* best-effort: keep the run alive even if logging fails */
+      }
+    };
     switch (event.type) {
       case "assistant-reasoning-delta":
-        appendFileSync(path, event.text);
+        append(event.text);
         break;
       case "assistant-text-delta":
-        appendFileSync(path, event.text);
+        append(event.text);
         break;
       case "tool-started":
-        appendFileSync(path, `\n[tool-started] ${event.toolName} ${summarizeInput(event.args)}\n`);
+        append(`\n[tool-started] ${event.toolName} ${summarizeInput(event.args)}\n`);
         break;
       case "tool-finished":
-        appendFileSync(path, `[tool-finished] ${event.isError ? "failed" : "ok"} ${event.toolName}\n`);
+        append(`[tool-finished] ${event.isError ? "failed" : "ok"} ${event.toolName}\n`);
         break;
       case "assistant-message":
-        appendFileSync(path, `\n[assistant-message] finish=${event.finishReason}\n`);
+        append(`\n[assistant-message] finish=${event.finishReason}\n`);
         break;
       case "run-finished":
-        appendFileSync(path, "[run-finished]\n");
+        append("[run-finished]\n");
         break;
       case "run-failed":
-        appendFileSync(path, `[run-failed] ${event.error.message}\n`);
+        append(`[run-failed] ${event.error.message}\n`);
         break;
     }
   };
