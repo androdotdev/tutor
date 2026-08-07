@@ -3,7 +3,6 @@ import {
   Container,
   Input,
   Markdown,
-  ScrollView,
   SelectList,
   TUI,
   Text,
@@ -31,45 +30,34 @@ const userPrefix = "you » ";
 const notePrefix = "· ";
 
 /**
- * Fixed-height, auto-following transcript. Assistant lines render as Markdown,
- * user/note lines as plain (ANSI-aware) text.
+ * Unbounded, append-only transcript. Every line is emitted once and commits to
+ * native terminal scrollback as it scrolls off — tmux/terminal scroll is the
+ * only scroll, so there is no in-app scroll state at all. Settled lines are
+ * FINAL and byte-stable; the streaming reply is a single mutable suffix line
+ * that repaints in place until commit.
  *
- * Scroll: rows are passed in full and ScrollView windows them by scrollOffset —
- * totalRows is intentionally NEVER set (setting it makes ScrollView.render
- * ignore the offset and freeze the viewport on the top rows).
- *
- * Streaming: deltas coalesce to one live re-render per ~33ms tick, and settled
- * lines are cached, so a delta costs only the live line, not the whole history.
+ * Engine integration (pi-tui native-scrollback contract):
+ * - render(): the FULL line array, cached per width — the same reference is
+ *   returned while content is unchanged, which is the engine's byte-identity
+ *   proof for the settled prefix (containers memoize on it).
+ * - getNativeScrollbackLiveRegionStart(): the settled row count — rows above
+ *   it are final and commit as exact bytes; the live line below it repaints
+ *   in place inside the window.
+ * - getRenderStablePrefixRows(): the settled count (0 right after a settled
+ *   change) so a streamed delta re-ingests only the live line, never history.
  */
-export class Transcript extends ScrollView {
+export class Transcript implements Component {
   private renderers: Array<{ who: ChatLine["who"]; renderer: Text | Markdown }> = [];
   private live: Markdown | null = null;
-  private contentWidth = 80;
-  private followTail = true;
-  /** Rendered rows of the settled renderers; invalidated on add/commit/resize. */
-  private settledRows: string[] = [];
-  /** Latest accumulated stream text, applied at most once per tick. */
-  private pendingLive: string | null = null;
-  private liveTimer: ReturnType<typeof setTimeout> | null = null;
-  private static readonly LIVE_FLUSH_MS = 33;
-
-  constructor() {
-    super([], { height: 10, scrollbar: "auto" });
-  }
-
-  setContentWidth(width: number): void {
-    const w = Math.max(10, width);
-    if (w === this.contentWidth) return;
-    this.contentWidth = w;
-    this.renderSettled(); // width changed: settled wraps are stale
-    this.rebuild();
-  }
-
-  /** Re-follow the tail after a viewport height change (e.g. terminal resize). */
-  override setHeight(height: number): void {
-    super.setHeight(height);
-    if (this.followTail) this.scrollToBottom();
-  }
+  private liveText: string | null = null;
+  /** Settled rows cached per render width; cleared when content changes. */
+  private settledCache = new Map<number, string[]>();
+  /** Settled content changed since the last render (report must be 0). */
+  private settledDirty = true;
+  /** Settled row count at the width of the last render (the live seam). */
+  private lastSettledCount = 0;
+  /** Full-frame cache: the same reference is returned while (width, content) is unchanged. */
+  private frameCache: { width: number; rows: readonly string[] } | null = null;
 
   add(line: ChatLine): void {
     if (line.who === "assistant") {
@@ -81,74 +69,78 @@ export class Transcript extends ScrollView {
         renderer: new Text(line.who === "note" ? style.dim(prefix + line.text) : prefix + line.text, 0, 0),
       });
     }
-    this.renderSettled();
-    this.rebuild();
+    this.settledCache.clear();
+    this.settledDirty = true;
+    this.frameCache = null;
   }
 
   /** Update the in-flight assistant stream (accumulatedText per delta). */
   setLive(text: string): void {
-    this.pendingLive = text;
-    if (this.liveTimer) return;
-    this.liveTimer = setTimeout(() => {
-      this.liveTimer = null;
-      this.flushLive();
-    }, Transcript.LIVE_FLUSH_MS);
+    this.liveText = text;
+    if (this.live) {
+      this.live.setText(text);
+    } else {
+      this.live = new Markdown(text, 0, 0, markdownTheme);
+    }
+    this.frameCache = null;
   }
 
   /** Promote the streaming reply to a settled assistant message. */
   commitLive(): void {
-    this.flushLive(); // apply any un-rendered tail before promoting
-    if (this.live) {
-      this.renderers.push({ who: "assistant", renderer: this.live });
-      this.live = null;
-      this.renderSettled();
-    }
-    this.rebuild();
+    if (this.liveText === null || !this.live) return;
+    this.renderers.push({ who: "assistant", renderer: this.live });
+    this.live = null;
+    this.liveText = null;
+    this.settledCache.clear();
+    this.settledDirty = true;
+    this.frameCache = null;
   }
 
   /** Discard the partial stream (e.g. run failed mid-generation). */
   dropLive(): void {
-    if (this.liveTimer) {
-      clearTimeout(this.liveTimer);
-      this.liveTimer = null;
-    }
-    this.pendingLive = null;
     this.live = null;
-    this.rebuild();
+    this.liveText = null;
+    this.frameCache = null;
   }
 
-  setFollowTail(follow: boolean): void {
-    this.followTail = follow;
-    if (follow) this.scrollToBottom();
+  render(width: number): readonly string[] {
+    const cached = this.frameCache;
+    if (cached && cached.width === width) return cached.rows;
+    const settled = this.settledRows(width);
+    this.lastSettledCount = settled.length;
+    const rows = this.live ? [...settled, ...this.live.render(width)] : settled;
+    this.frameCache = { width, rows };
+    return rows;
   }
 
-  /** Apply the latest pending stream text (if any) to the live markdown. */
-  private flushLive(): void {
-    const t = this.pendingLive;
-    this.pendingLive = null;
-    if (t === null) return;
-    if (!this.live) {
-      this.live = new Markdown(t, 0, 0, markdownTheme);
-    } else {
-      this.live.setText(t);
+  /** Live-region seam: settled rows are final; the live line is the mutable suffix. */
+  getNativeScrollbackLiveRegionStart(): number {
+    return this.lastSettledCount;
+  }
+
+  /** Stability report: settled rows are byte-stable; 0 right after a settled change. */
+  getRenderStablePrefixRows(): number {
+    if (this.settledDirty) {
+      this.settledDirty = false;
+      return 0;
     }
-    this.rebuild();
+    return this.lastSettledCount;
   }
 
-  private renderSettled(): void {
-    const w = this.contentWidth;
+  invalidate(): void {
+    this.settledCache.clear();
+    this.settledDirty = true;
+    this.frameCache = null;
+  }
+
+  private settledRows(width: number): readonly string[] {
+    const cached = this.settledCache.get(width);
+    if (cached) return cached;
     const rows: string[] = [];
-    for (const { renderer } of this.renderers) rows.push(...renderer.render(w));
-    this.settledRows = rows;
-  }
-
-  private rebuild(): void {
-    const w = this.contentWidth;
-    // Settled rows are cached; only the live markdown re-renders per flush.
-    const rows = this.live ? [...this.settledRows, ...this.live.render(w)] : this.settledRows;
-    this.setLines(rows);
-    // NOTE: never setTotalRows — see the class comment.
-    if (this.followTail) this.scrollToBottom();
+    for (const { renderer } of this.renderers) rows.push(...renderer.render(width));
+    this.settledCache.set(width, rows);
+    this.settledDirty = true; // width miss: rows were re-wrapped, not byte-stable
+    return rows;
   }
 }
 
@@ -202,16 +194,19 @@ export class SessionView extends Container {
     return this.input;
   }
 
-  override render(width: number): readonly string[] {
-    // Re-fit the viewport every frame: header(1) + status(1) + input(1) + margin(1).
-    this.transcript.setHeight(Math.max(4, this.tui.terminal.rows - 4));
-    this.transcript.setContentWidth(Math.max(10, width - 1));
-    return super.render(width);
+  /** Native-scrollback seam: the transcript is the first child (offset 0), so its seam is the view's. */
+  getNativeScrollbackLiveRegionStart(): number {
+    return this.transcript.getNativeScrollbackLiveRegionStart();
+  }
+
+  /** Stability report: settled rows are byte-stable; forwarded from the transcript. */
+  getRenderStablePrefixRows(): number {
+    return this.transcript.getRenderStablePrefixRows();
   }
 
   private setIdleStatus(): void {
     this.status.setText(
-      style.dim("Ask the coach — Enter sends · Esc stops (or back) · Shift+↑/↓ scrolls · Ctrl+C quits"),
+      style.dim("Ask the coach — Enter sends · Esc stops (or back) · terminal scroll (tmux) · Ctrl+C quits"),
     );
   }
 
@@ -251,9 +246,6 @@ export class SessionView extends Container {
     if (!text || this.busy) return;
     this.busy = true;
     this.input.setValue("");
-    // Sending a message ends history-browsing: snap back to the tail so the
-    // new exchange is visible.
-    this.transcript.setFollowTail(true);
     this.transcript.add({ who: "user", text });
     this.setBusyStatus();
     this.tui.requestRender();
@@ -325,9 +317,22 @@ export class LyceumApp extends Container {
     return this.view?.focusable ?? null;
   }
 
-  /** The active chat view, if a session is open (for global scroll keys). */
-  get sessionView(): SessionView | null {
-    return this.view instanceof SessionView ? this.view : null;
+  /** Forward the active view's live-region seam (transcript = the mutable suffix). */
+  getNativeScrollbackLiveRegionStart(): number | undefined {
+    const view = this.view;
+    if (view && "getNativeScrollbackLiveRegionStart" in view) {
+      return view.getNativeScrollbackLiveRegionStart();
+    }
+    return undefined;
+  }
+
+  /** Forward the active view's stability report. */
+  getRenderStablePrefixRows(): number | undefined {
+    const view = this.view;
+    if (view && "getRenderStablePrefixRows" in view) {
+      return view.getRenderStablePrefixRows();
+    }
+    return undefined;
   }
 
   showList(): void {
