@@ -117,6 +117,7 @@ export function createAuthorSession(opts: AuthorSessionOptions): AuthorSession {
                   `first, then ${base}/exercise/index.js, then ${base}/README.md. The task fails without them.`,
               },
             ],
+            timestamp: Date.now(),
           });
         }
       } else if (event.type === "tool-started" && event.toolName === "write_file") {
