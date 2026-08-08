@@ -1,6 +1,6 @@
 # Lyceum TUI redesign — plan
 
-Status: Phases 0–2 **done** (verified); Phases 3–4 proposed.
+Status: Phases 0–3 **done** (verified); Phase 4 proposed.
 
 Release process: feature commits land per phase, **no version bump or tag until
 the final push** — one `release(cli): bump to <version>` commit + tag at the end
@@ -192,35 +192,62 @@ Acceptance met: in a module session, `/tree` lists turns; selecting an older
 turn rewinds the session (coach forgets later turns; transcript truncates).
 Branching remains deferred (tree-capable history format).
 
-### Phase 3 — `/new` in-TUI: steerable course pipeline
+### Phase 3 — `/new` in-TUI: steerable course pipeline ✅ done
 
-Files: `packages/cli/src/tui/build.ts` (new runner), `App.ts`, small touches in
-`packages/agents` (`progress.ts` / stage signatures only if needed).
+Files: `packages/cli/src/tui/build.ts` (new `BuildRunner`), `App.ts` (HomeView
+`/new` + Esc routing), `main.ts` (relaxed bare-launch), `packages/agents`
+(`progress.ts`, `clarify.ts`, `researcher.ts`, `planner.ts`,
+`course-builder.ts`, `author.ts` — abort + event plumbing),
+`test/build.test.ts` (new), `test/home.test.ts`.
 
-1. Runner: a background task that runs the existing stages in order —
-   `runClarify` → `runResearch` → `planCourse` → `buildCourse` — exactly the
-   `bin.ts` flow, checkpointed via the existing `.lyceum/plan.json`. Live
-   events feed the home transcript via the existing `stageSink`/event shape
-   (log lines = appended notes; the append-only model makes this free).
-2. Steering:
-   - **Clarify in-chat**: replace `defaultPromptLine()` with a TUI `AskUserFn`
-     that appends the model's question as a note and resolves the next input
-     line submission as the answer. The input never goes away — that's the
-     whole point.
-   - **Interrupt**: Esc during a stage aborts it (abort the in-flight agent
-     run; checkpoint file makes a later `/new <same prompt>` resume safe —
-     existing resume path). Esc does not kill the TUI.
-   - **Failed modules**: build summary printed to the transcript; re-run
-     `/new <same prompt>` resumes the failed/pending modules (already
-     implemented in `bin.ts`'s resume branch — reuse it).
-3. `--yes` / `--no-research` / `--modules` / `--stub` options: accept flags on
-   the command line of `/new` (`/new --yes make a docker course`); parse with a
-   tiny hand-rolled parser, mirroring the CLI flags.
+1. **Agents plumbing** (no behavior change outside the TUI): `stageSink` gains
+   an app-facing `onEvent` listener; new `wireAbort(agent, signal)` one-shot
+   helper; `runClarify`/`runResearch`/`runPlanStage`/`buildCourse` accept
+   `abort?: AbortSignal` + `onEvent?`; `buildCourse` additionally reports per-
+   module progress via `onModule` (`BuildModuleEvent`: started/drafted/failed)
+   and continues on module failure (CLI semantics preserved); `AuthorSession`
+   gains `abort()`.
+2. **`BuildRunner`** (no-flag `/new <course name>`): dispatch on the dir the
+   TUI was launched in, mirroring `bin.ts` — a matching `.lyceum/plan.json`
+   resumes (drafts pending/failed modules; "all modules already drafted —
+   nothing to resume" when complete), an existing `modules/` appends ONE module
+   with that title, otherwise the full pipeline runs from scratch (the fresh
+   course-building folder case). Live stage events stream into the home
+   transcript: stage banners, model recap lines (committed on run-finished),
+   `[stage] → tool` / `[stage] ok tool` notes, per-module drafting notes, and a
+   final `N/M modules drafted` + `course ready` summary.
+3. **Steering**:
+   - **Clarify in-chat**: `askUser` appends the model's question ("coach asks:
+     …"), the input line switches to "answering — type your answer, Enter; Esc
+     interrupts", and the next submission resolves the question. The input
+     never goes away.
+   - **Interrupt**: Esc rejects a pending question and aborts the in-flight
+     stage (idle-safe: when nothing is running, Esc quits, as the footer
+     says). "interrupted — re-run /new <same prompt> to resume"; the
+     checkpoint makes the re-run safe.
+   - **Flags dropped**: `/new` takes NO flags — `/new <course name>` only
+     (user decision: "do we even need the flag for / command?"). Clarify is
+     in-chat by design and Esc is the interrupt; `--yes` / `--no-research` /
+     `--modules` / `--stub` remain CLI-only (`lyceum new`).
+4. Tests (`test/build.test.ts`, 6 cases; `home.test.ts` updated to the no-flag
+   surface): askUser appends + resolves via submit, interrupt rejects a
+   pending question (idle-safe), submit routing (false when idle, question
+   wins), bare `/new` prints usage, Esc quits when idle.
 
-Acceptance: `/new make a docker course` inside the TUI runs the full pipeline
-with live logs; clarifying questions are answered in the input line; Esc
-interrupts a stage; failures resume on re-run; the terminal stays interactive
-the whole time.
+Verified: **119 tests pass**, typecheck + lint clean, pty smoke (real
+`LyceumApp` in a fresh dir against a scripted fake OpenAI-compatible LLM, all
+stages driven over real tool calls): full pipeline boots in a module-less dir,
+the clarify question is answered in the input line, research → plan → author
+run with live logs, both modules drafted with `tests/` + `exercise/` +
+`README.md`, `course ready`; `.lyceum/plan.json` checkpointed; same prompt
+again → "nothing to resume"; a failed module in the checkpoint → "resuming …
+(N left)" and re-drafts it; a different prompt in a course dir → append mode
+authors a new module; Esc mid-build → "interrupted — re-run …" and the TUI
+stays alive and interactive; Esc at idle quits (exit 0).
+
+Acceptance met: `/new make a docker course` runs the full pipeline with live
+logs; clarifying questions answered in the input line; Esc interrupts a stage;
+failures resume on re-run; the terminal stays interactive the whole time.
 
 ### Phase 4 — Web landing page (`packages/web`)
 

@@ -20,7 +20,7 @@ const provider = {
 } as ProviderSelection;
 
 function makeHome(onQuit = () => {}): HomeView {
-  return new HomeView(tui, { modules, provider, onQuit });
+  return new HomeView(tui, { modules, provider, courseRoot: "/tmp/lyceum-home-test", onQuit });
 }
 
 describe("runHomeCommand", () => {
@@ -47,6 +47,7 @@ describe("runHomeCommand", () => {
     const notes = runHomeCommand("/help", { modules, provider }).join("\n");
     expect(notes).toContain("/list");
     expect(notes).toContain("/provider");
+    expect(notes).toContain("/new");
     expect(notes).toContain("/help");
   });
 

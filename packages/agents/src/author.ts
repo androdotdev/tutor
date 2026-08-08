@@ -56,6 +56,8 @@ export interface AuthorSession {
   /** Run the authoring task to completion; resolve to the final assistant text. */
   run(input: string): Promise<string>;
   subscribe(listener: (event: TutorRuntimeEvent) => void): () => void;
+  /** Cancel any in-flight authoring run (Esc in the TUI). */
+  abort(reason?: unknown): void;
 }
 
 export function createAuthorSession(opts: AuthorSessionOptions): AuthorSession {
@@ -144,6 +146,9 @@ export function createAuthorSession(opts: AuthorSessionOptions): AuthorSession {
       return () => {
         listeners.delete(listener);
       };
+    },
+    abort() {
+      agent.abort();
     },
   };
 }

@@ -8,7 +8,7 @@ import { dirname } from "node:path";
 import type { TutorRuntimeEvent } from "./pi-events";
 
 /** Compact, single-line rendering of a tool-call argument. */
-function summarizeInput(input: unknown): string {
+export function summarizeInput(input: unknown): string {
   if (typeof input === "string") return input.length > 72 ? `${input.slice(0, 72)}…` : input;
   try {
     const s = JSON.stringify(input);
@@ -95,13 +95,28 @@ export function fileLogger(path: string): (event: TutorRuntimeEvent) => void {
 /** Combine the stdout progress logger with an optional file log; undefined when neither is set. */
 export function stageSink(
   label: string,
-  opts: { progress?: boolean; logFile?: string },
+  opts: { progress?: boolean; logFile?: string; onEvent?: (event: TutorRuntimeEvent) => void },
 ): ((event: TutorRuntimeEvent) => void) | undefined {
   const stdout = opts.progress ? progressLogger(label) : undefined;
   const file = opts.logFile ? fileLogger(opts.logFile) : undefined;
-  if (!stdout && !file) return undefined;
+  const extra = opts.onEvent;
+  if (!stdout && !file && !extra) return undefined;
   return (event) => {
     stdout?.(event);
     file?.(event);
+    extra?.(event);
   };
+}
+
+/**
+ * Abort an in-flight stage's agent run when `signal` fires (Esc in the TUI).
+ * The stage's agent run then settles and its post-run error check throws,
+ * so the pipeline stops at the stage boundary. Returns a cleanup that
+ * detaches the listener (stages re-arm it per attempt/run).
+ */
+export function wireAbort(agent: { abort: () => void }, signal?: AbortSignal): () => void {
+  if (!signal) return () => {};
+  const onAbort = () => agent.abort();
+  signal.addEventListener("abort", onAbort, { once: true });
+  return () => signal.removeEventListener("abort", onAbort);
 }

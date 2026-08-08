@@ -14,6 +14,7 @@ import type { TutorSession, TutorRuntimeEvent } from "@tutor/agents";
 import type { ProviderSelection } from "@tutor/llms";
 import { join } from "node:path";
 import { markdownTheme, selectTheme, style } from "./theme";
+import { BuildRunner } from "./build";
 import { openTreeOverlay, rewindHistoryFile } from "./tree";
 
 export interface LyceumAppOptions {
@@ -325,7 +326,7 @@ export function runHomeCommand(
       return [`provider: ${p.label} · ${p.modelId} · ${p.baseUrl}`];
     }
     case "/help":
-      return ["commands: /list — course modules · /provider — resolved LLM · /help — this list"];
+      return ["commands: /list — course modules · /provider — resolved LLM · /new — build a course · /help — this list"];
     default:
       return [`unknown command: ${name} — try /help`];
   }
@@ -340,10 +341,11 @@ export class HomeView extends Container {
   private readonly modules: ModuleDesc[];
   private readonly provider: ProviderSelection;
   private readonly onQuit: () => void;
+  private readonly runner: BuildRunner;
 
   constructor(
     tui: TUI,
-    opts: { modules: ModuleDesc[]; provider: ProviderSelection; onQuit: () => void },
+    opts: { modules: ModuleDesc[]; provider: ProviderSelection; courseRoot: string; onQuit: () => void },
   ) {
     super();
     this.tui = tui;
@@ -353,7 +355,24 @@ export class HomeView extends Container {
 
     this.input.prompt = "» ";
     this.input.onSubmit = (value) => this.submit(value);
-    this.input.onEscape = () => this.onQuit();
+    this.input.onEscape = () => {
+      if (this.runner.running) {
+        this.runner.interrupt();
+        this.tui.requestRender();
+      } else {
+        this.onQuit();
+      }
+    };
+    this.runner = new BuildRunner({
+      courseRoot: opts.courseRoot,
+      provider: opts.provider,
+      transcript: this.transcript,
+      onStatus: (text) => {
+        this.status.setText(text);
+        this.tui.requestRender();
+      },
+      idleStatus: style.dim("home — /list · /provider · /new · /help · Esc quits"),
+    });
 
     this.addChild(this.transcript);
     this.addChild(this.status);
@@ -361,9 +380,9 @@ export class HomeView extends Container {
 
     this.transcript.add({
       who: "note",
-      text: "lyceum — Socratic self-learning coach. Type /help for commands, /list to browse modules, or `lyceum run` for a module session.",
+      text: "lyceum — Socratic self-learning coach. /new builds a course here · /list browses modules · /help lists commands · `lyceum run` opens a module session.",
     });
-    this.status.setText(style.dim("home — /list · /provider · /help · Esc quits"));
+    this.status.setText(style.dim("home — /list · /provider · /new · /help · Esc quits"));
   }
 
   /** The component that owns keyboard input while this view is active. */
@@ -386,9 +405,26 @@ export class HomeView extends Container {
     if (!text) return;
     this.input.setValue("");
     this.transcript.add({ who: "user", text });
+    if (this.runner.running) {
+      this.runner.submit(text);
+      this.tui.requestRender();
+      return;
+    }
     if (text.startsWith("/")) {
-      for (const note of runHomeCommand(text, { modules: this.modules, provider: this.provider })) {
-        this.transcript.add({ who: "note", text: note });
+      if (text === "/new" || text.startsWith("/new ")) {
+        const prompt = text.slice(4).trim();
+        if (!prompt) {
+          this.transcript.add({
+            who: "note",
+            text: "usage: /new <course name> — e.g. /new make a docker course",
+          });
+        } else {
+          void this.runner.start(prompt);
+        }
+      } else {
+        for (const note of runHomeCommand(text, { modules: this.modules, provider: this.provider })) {
+          this.transcript.add({ who: "note", text: note });
+        }
       }
     } else {
       this.transcript.add({
@@ -479,6 +515,7 @@ export class LyceumApp extends Container {
       new HomeView(this.tui, {
         modules: this.opts.modules,
         provider: this.opts.provider,
+        courseRoot: this.opts.courseRoot,
         onQuit: this.opts.onQuit,
       }),
     );

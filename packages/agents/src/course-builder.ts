@@ -10,7 +10,8 @@ import { resolveCourse } from "@tutor/shared";
 import type { ProviderSelection } from "@tutor/llms";
 import { createPolishTool } from "./polish";
 import { createAuthorSession } from "./author";
-import { stageSink } from "./progress";
+import { stageSink, wireAbort } from "./progress";
+import type { TutorRuntimeEvent } from "./pi-events";
 import { loadCoursePlan, newCoursePlan, markModule } from "./plan-file";
 import type { CoursePlanFile, CourseOutline } from "./pipeline-types";
 
@@ -23,6 +24,20 @@ export interface BuildCourseOptions {
   progress?: boolean;
   /** Append the full stream to this file (lyceum new --log). */
   logFile?: string;
+  /** Abort the build: stops the current author session and the whole loop (Esc in the TUI). */
+  abort?: AbortSignal;
+  /** Extra app-facing listener alongside the stage sink (TUI transcript). */
+  onEvent?: (event: TutorRuntimeEvent) => void;
+  /** Per-module progress callback (started/drafted/failed) for TUI notes. */
+  onModule?: (event: BuildModuleEvent) => void;
+}
+
+/** One module's progress through the build loop. */
+export interface BuildModuleEvent {
+  dir: string;
+  title: string;
+  status: "started" | "drafted" | "failed";
+  error?: string;
 }
 
 export interface BuildCourseResult {
@@ -77,14 +92,17 @@ export async function buildCourse(opts: BuildCourseOptions): Promise<BuildCourse
   const polishTool = createPolishTool(provider);
 
   for (const m of outline.modules) {
+    if (opts.abort?.aborted) break; // interrupt: stop before the next module
     const dir = dirs.get(m.id) ?? moduleDir(m);
     const entry = plan.modules.find((p) => p.id === m.id);
     if (entry?.status === "drafted") continue; // resume: already built
+    opts.onModule?.({ dir, title: m.title, status: "started" });
 
     const desc = modules.find((d) => d.id === m.id);
     if (!desc) {
       console.log(`drafting ${dir}... FAILED: module dir not resolvable`);
       markModule(plan, m.id, { status: "failed", error: "module dir not resolvable", dir });
+      opts.onModule?.({ dir, title: m.title, status: "failed", error: "module dir not resolvable" });
       continue;
     }
 
@@ -97,12 +115,21 @@ export async function buildCourse(opts: BuildCourseOptions): Promise<BuildCourse
         provider,
         extraTools: [polishTool],
       });
-      const sink = stageSink("build", { progress: opts.progress, logFile: opts.logFile });
+      const sink = stageSink("build", {
+        progress: opts.progress,
+        logFile: opts.logFile,
+        onEvent: opts.onEvent,
+      });
       if (sink) session.subscribe(sink);
       const task =
         `Author the module "${m.title}". Concepts to cover: ${m.concepts.join("; ")}. ` +
         `Sources to cite: ${(m.sources ?? []).join(", ")}`;
-      await session.run(task);
+      const unwire = wireAbort(session, opts.abort);
+      try {
+        await session.run(task);
+      } finally {
+        unwire();
+      }
       // The grader only sees modules/<dir>/tests/, exercise/, README.md — a
       // run that finished without landing those files (e.g. wrote to a bare
       // path at the course root) is NOT drafted: fail loudly so the resume
@@ -113,13 +140,17 @@ export async function buildCourse(opts: BuildCourseOptions): Promise<BuildCourse
       if (missingFiles.length) {
         console.log(`drafting ${dir}... FAILED: missing ${missingFiles.join(", ")}`);
         markModule(plan, m.id, { status: "failed", error: `authored files missing: ${missingFiles.join(", ")}`, dir });
+        opts.onModule?.({ dir, title: m.title, status: "failed", error: `authored files missing: ${missingFiles.join(", ")}` });
         continue;
       }
       markModule(plan, m.id, { status: "drafted", dir });
+      opts.onModule?.({ dir, title: m.title, status: "drafted" });
     } catch (err) {
+      if (opts.abort?.aborted) throw err; // interrupt: stop the whole build
       const message = err instanceof Error ? err.message : String(err);
       console.log(`drafting ${dir}... FAILED: ${message}`);
       markModule(plan, m.id, { status: "failed", error: message, dir });
+      opts.onModule?.({ dir, title: m.title, status: "failed", error: message });
     }
   }
 

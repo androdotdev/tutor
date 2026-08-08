@@ -14,7 +14,9 @@ export async function runTui(
   opts?: { home?: boolean },
 ): Promise<void> {
   const modules = await resolveCourse(courseRoot);
-  if (!modules.length) throw new Error(`no modules found under ${courseRoot}/modules`);
+  // Home works without modules (fresh course-building folder); the picker and
+  // direct module sessions need a real course.
+  if (!modules.length && !opts?.home) throw new Error(`no modules found under ${courseRoot}/modules`);
 
   const provider = resolveProvider(userConfig.provider);
   if (!provider) {

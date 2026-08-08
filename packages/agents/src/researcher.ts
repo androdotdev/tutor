@@ -10,8 +10,8 @@ import { join } from "node:path";
 import { buildAuthorTools, type PiAgentTool } from "@tutor/core";
 import { buildModel, buildStreamFn, type ProviderSelection } from "@tutor/llms";
 import type { ResearchFinding, ResearchReport } from "./pipeline-types";
-import { attachPiBridge, lastAssistantText } from "./pi-events";
-import { stageSink } from "./progress";
+import { attachPiBridge, lastAssistantText, type TutorRuntimeEvent } from "./pi-events";
+import { stageSink, wireAbort } from "./progress";
 
 export interface ResearchOptions {
   provider: ProviderSelection;
@@ -23,6 +23,10 @@ export interface ResearchOptions {
   progress?: boolean;
   /** Append the full stream to this file (lyceum new --log). */
   logFile?: string;
+  /** Abort the in-flight research run (Esc in the TUI). */
+  abort?: AbortSignal;
+  /** Extra app-facing listener alongside the stage sink (TUI transcript). */
+  onEvent?: (event: TutorRuntimeEvent) => void;
 }
 
 const MAX_RESEARCH_ITERATIONS = 12;
@@ -135,10 +139,19 @@ async function attempt(
   });
   const bridge = attachPiBridge(agent, {
     maxIterations: MAX_RESEARCH_ITERATIONS,
-    onEvent: stageSink("research", { progress: opts.progress, logFile: opts.logFile }),
+    onEvent: stageSink("research", {
+      progress: opts.progress,
+      logFile: opts.logFile,
+      onEvent: opts.onEvent,
+    }),
   });
 
-  await agent.prompt(prompt);
+  const unwire = wireAbort(agent, opts.abort);
+  try {
+    await agent.prompt(prompt);
+  } finally {
+    unwire();
+  }
   if (!bridge.capped()) {
     const error = agent.state.errorMessage;
     if (error) throw new Error(error ?? "research run failed");

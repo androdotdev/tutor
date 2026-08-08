@@ -15,8 +15,8 @@ import { join } from "node:path";
 import { buildAuthorTools } from "@tutor/core";
 import { buildModel, buildStreamFn, type ProviderSelection } from "@tutor/llms";
 import type { CourseOutline, ModuleDifficulty, PlannedModule, ResearchReport } from "./pipeline-types.ts";
-import { attachPiBridge, lastAssistantText } from "./pi-events";
-import { stageSink } from "./progress";
+import { attachPiBridge, lastAssistantText, type TutorRuntimeEvent } from "./pi-events";
+import { stageSink, wireAbort } from "./progress";
 
 export interface PlanOptions {
   provider: ProviderSelection;
@@ -29,6 +29,10 @@ export interface PlanOptions {
   progress?: boolean;
   /** Append the full stream to this file (lyceum new --log). */
   logFile?: string;
+  /** Abort the in-flight plan run (Esc in the TUI). */
+  abort?: AbortSignal;
+  /** Extra app-facing listener alongside the stage sink (TUI transcript). */
+  onEvent?: (event: TutorRuntimeEvent) => void;
 }
 
 const DIFFICULTIES = ["intro", "core", "capstone"] as const;
@@ -328,6 +332,8 @@ async function runOutlineAttempt(
   clamped: number | null,
   progress?: boolean,
   logFile?: string,
+  abort?: AbortSignal,
+  onEvent?: (event: TutorRuntimeEvent) => void,
 ): Promise<{ outline: CourseOutline | null; errors: string[]; present: string[]; outputText: string }> {
   const { write_file } = buildAuthorTools({ courseRoot, modules: [] });
   const agent = new Agent({
@@ -343,10 +349,15 @@ async function runOutlineAttempt(
     // meta + one file per module (up to 8) + final reply; a cap here would
     // silently truncate a full 8-module plan.
     maxIterations: 16,
-    onEvent: stageSink("plan", { progress, logFile }),
+    onEvent: stageSink("plan", { progress, logFile, onEvent }),
   });
 
-  await agent.prompt(input);
+  const unwire = wireAbort(agent, abort);
+  try {
+    await agent.prompt(input);
+  } finally {
+    unwire();
+  }
   if (!bridge.capped()) {
     const error = agent.state.errorMessage;
     if (error) throw new Error(error ?? "Planner did not produce a valid course outline");
@@ -383,7 +394,7 @@ async function runPlanStage(opts: PlanOptions): Promise<CourseOutline> {
   const input = buildPlanInput(opts.prompt, opts.research);
   await clearStageFiles(opts.courseRoot);
 
-  const first = await runOutlineAttempt(opts.provider, opts.courseRoot, systemPrompt, input, clamped, opts.progress, opts.logFile);
+  const first = await runOutlineAttempt(opts.provider, opts.courseRoot, systemPrompt, input, clamped, opts.progress, opts.logFile, opts.abort, opts.onEvent);
   if (first.outline) return first.outline;
 
   // The model planned in prose instead of files: accept a complete outline from
@@ -401,7 +412,7 @@ async function runPlanStage(opts: PlanOptions): Promise<CourseOutline> {
       ? `\nModule files already on disk: ${first.present.join(", ")} — keep them, write the missing module files and fix the invalid ones.`
       : "\nWrite .lyceum/outline.json ({ name, topic }) and then one .lyceum/modules/<id>.json per module, using the write_file tool.",
   ].join("\n");
-  const second = await runOutlineAttempt(opts.provider, opts.courseRoot, systemPrompt, `${input}${note}`, clamped, opts.progress, opts.logFile);
+  const second = await runOutlineAttempt(opts.provider, opts.courseRoot, systemPrompt, `${input}${note}`, clamped, opts.progress, opts.logFile, opts.abort, opts.onEvent);
   if (second.outline) return second.outline;
 
   const textOutline = extractOutlineFromText(second.outputText) ?? (second.present.length === 0 ? extractOutlineFromText(first.outputText) : null);
