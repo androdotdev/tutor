@@ -12,7 +12,9 @@ import {
 import type { ModuleDesc } from "@tutor/shared";
 import type { TutorSession, TutorRuntimeEvent } from "@tutor/agents";
 import type { ProviderSelection } from "@tutor/llms";
+import { join } from "node:path";
 import { markdownTheme, selectTheme, style } from "./theme";
+import { openTreeOverlay, rewindHistoryFile } from "./tree";
 
 export interface LyceumAppOptions {
   courseRoot: string;
@@ -155,14 +157,27 @@ export class SessionView extends Container {
   private readonly session: TutorSession;
   private readonly module: ModuleDesc;
   private readonly onBack: () => void;
+  private readonly onRewind: (index: number) => void;
   private busy = false;
 
-  constructor(tui: TUI, opts: { session: TutorSession; module: ModuleDesc; onBack: () => void }) {
+  constructor(
+    tui: TUI,
+    opts: {
+      session: TutorSession;
+      module: ModuleDesc;
+      onBack: () => void;
+      /** /tree pick: rewind the session history to this turn index (inclusive). */
+      onRewind: (index: number) => void;
+      /** Optional note appended after history replay (e.g. "rewound"). */
+      note?: string;
+    },
+  ) {
     super();
     this.tui = tui;
     this.session = opts.session;
     this.module = opts.module;
     this.onBack = opts.onBack;
+    this.onRewind = opts.onRewind;
 
     this.input.prompt = style.bold(userPrefix.trimEnd() + " ");
     this.input.onSubmit = (value) => void this.submit(value);
@@ -188,6 +203,7 @@ export class SessionView extends Container {
     for (const turn of this.session.historyTurns) {
       this.transcript.add({ who: turn.who, text: turn.text });
     }
+    if (opts.note) this.transcript.add({ who: "note", text: opts.note });
     this.session.subscribe((event) => this.onEvent(event));
   }
 
@@ -208,7 +224,7 @@ export class SessionView extends Container {
 
   private setIdleStatus(): void {
     this.status.setText(
-      style.dim("Ask the coach — Enter sends · Esc stops (or back) · terminal scroll (tmux) · Ctrl+C quits"),
+      style.dim("Ask the coach — Enter sends · /tree rewinds · Esc stops (or back) · Ctrl+C quits"),
     );
   }
 
@@ -245,10 +261,15 @@ export class SessionView extends Container {
 
   private async submit(value: string): Promise<void> {
     const text = value.trim();
-    if (!text || this.busy) return;
-    this.busy = true;
+    if (!text) return;
     this.input.setValue("");
     this.transcript.add({ who: "user", text });
+    if (text === "/tree") {
+      this.openTree();
+      return;
+    }
+    if (this.busy) return;
+    this.busy = true;
     this.setBusyStatus();
     this.tui.requestRender();
     try {
@@ -262,6 +283,25 @@ export class SessionView extends Container {
       this.setIdleStatus();
       this.tui.requestRender();
     }
+  }
+
+  /** /tree: fullscreen turn picker; a pick rewinds the session to that turn. */
+  private openTree(): void {
+    if (this.busy) {
+      this.transcript.add({
+        who: "note",
+        text: "coach is thinking — press Esc to stop, then /tree to rewind",
+      });
+      this.tui.requestRender();
+      return;
+    }
+    const turns = this.session.historyTurns;
+    if (turns.length < 2) {
+      this.transcript.add({ who: "note", text: "no earlier turns to rewind to" });
+      this.tui.requestRender();
+      return;
+    }
+    openTreeOverlay(this.tui, turns, (index) => this.onRewind(index));
   }
 }
 
@@ -450,14 +490,26 @@ export class LyceumApp extends Container {
     );
   }
 
-  openSession(module: ModuleDesc): void {
+  openSession(module: ModuleDesc, note?: string): void {
     this.swap(
       new SessionView(this.tui, {
         session: this.opts.makeSession(module),
         module,
         onBack: () => this.showList(),
+        onRewind: (index) => this.rewindSession(module, index),
+        note,
       }),
     );
+  }
+
+  /** /tree pick: truncate the history file at `index` and rebuild the session. */
+  private rewindSession(module: ModuleDesc, index: number): void {
+    const historyFile = join(this.opts.courseRoot, "session", `${module.id}.json`);
+    const { original, kept } = rewindHistoryFile(historyFile, index);
+    if (original === 0) return;
+    // Recreates: loads the truncated file, replays the transcript, then notes
+    // the cut.
+    this.openSession(module, `↩ rewound to ${kept} of ${original} turns`);
   }
 
   private swap(view: HomeView | ModuleListView | SessionView): void {

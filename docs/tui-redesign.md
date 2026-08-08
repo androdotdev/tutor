@@ -1,6 +1,6 @@
 # Lyceum TUI redesign — plan
 
-Status: Phases 0–1 **done** (verified); Phases 2–4 proposed.
+Status: Phases 0–2 **done** (verified); Phases 3–4 proposed.
 
 Release process: feature commits land per phase, **no version bump or tag until
 the final push** — one `release(cli): bump to <version>` commit + tag at the end
@@ -158,27 +158,39 @@ the transcript; plain text gets the no-chat hint only; Esc quits; picker path
 Acceptance met: bare `lyceum` opens home; `/list`, `/provider`, `/help` work;
 `lyceum run` behaves exactly as today from a shell.
 
-### Phase 2 — `/tree`: session-tree navigator (v1: jump/rewind)
+### Phase 2 — `/tree`: session-tree navigator (v1: jump/rewind) ✅ done
 
-Files: `packages/agents/src/session.ts` (small addition), new
-`packages/cli/src/tui/tree.ts`, `App.ts`.
+Files: `packages/cli/src/tui/tree.ts` (new), `App.ts` (SessionView /tree,
+LyceumApp rewind), `test/tree.test.ts`.
 
-1. omp semantics, v1: **in-file leaf move** — pick an earlier turn, continue
-   from there. Sessions are flat today (`HistoryTurn[]`, no parent pointers), so
-   v1 is: overlay SelectList of turns (who + truncated text, newest last),
-   select → truncate the history file at that turn → rebuild the session
-   (re-seed the coach from the truncated history, replay the transcript).
-   That's omp's "re-run from an earlier point without losing the ability to
-   continue" minus branching.
-2. Session addition: `TutorSession` already loads/seeds from `historyFile` at
-   construction — rewinding = truncate file + recreate session via the existing
-   `openSession` path. No agent-loop changes needed.
-3. Deferred: real branching (keep the abandoned branch, `/branch` to a new
-   session file) — requires a tree-capable history format
-   (`{ id, parentId }` entries). Record as a follow-up; do not half-build it.
+Built:
 
-Acceptance: in a module session, `/tree` lists turns; selecting an older user
+1. `openTreeOverlay`: fullscreen (alt-screen) `SelectList` of turns — "you: …" /
+   "coach: …" labels with truncated text + timestamp descriptions, newest last.
+   Select → `onPick(index)`; Esc/cancel hides and leaves the session untouched.
+   Overlays freeze commits, so the picker never pollutes scrollback.
+2. `rewindHistoryFile(file, index)`: truncate the session file at the picked
+   turn (inclusive), returns `{ original, kept }` — the rewind primitive.
+3. SessionView: `/tree` in the chat input (the only chat slash — everything
+   else still goes to the coach). Busy → hint note; <2 turns → note; else the
+   overlay. `onRewind(index)` → LyceumApp truncates the history file and
+   reopens the session (existing `openSession` path: fresh TutorSession loads
+   the truncated file, re-seeds the coach, replays the transcript), appending
+   a "↩ rewound to N of M turns" note.
+4. Tests (`test/tree.test.ts`, 8 cases): rewind math (inclusive cut, first
+   turn, missing file no-op), overlay wiring (fullscreen, pick index, cancel),
+   SessionView notes (no history, busy), non-tree messages reach the coach,
+   LyceumApp end-to-end (pick truncates file + rebuilds session).
+
+Verified: 113 tests pass, typecheck + lint clean, pty smoke (tmux, real
+session + history file): resumed session shows 5 turns; `/tree` opens the
+fullscreen picker; picking turn 3 truncates the file to 3 turns, rebuilds the
+session, replays the truncated transcript + rewind note; cancel restores the
+screen with the file untouched.
+
+Acceptance met: in a module session, `/tree` lists turns; selecting an older
 turn rewinds the session (coach forgets later turns; transcript truncates).
+Branching remains deferred (tree-capable history format).
 
 ### Phase 3 — `/new` in-TUI: steerable course pipeline
 
