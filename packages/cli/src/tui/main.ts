@@ -19,7 +19,7 @@ export async function runTui(
   if (!modules.length && !opts?.home) throw new Error(`no modules found under ${courseRoot}/modules`);
 
   const provider = resolveProvider(userConfig.provider);
-  if (!provider) {
+  if (!provider && !opts?.home) {
     throw new Error(
       "no LLM provider configured: set OPENAI_API_KEY (or OPENAI_BASE_URL) or OLLAMA_HOST",
     );
@@ -34,8 +34,11 @@ export async function runTui(
     provider,
     initialModule,
     initialView: opts?.home ? "home" : "picker",
-    makeSession: (module) =>
-      createTutorSession({
+    makeSession: (module) => {
+      // Only reachable from the picker/chat paths, which require a provider;
+      // home (no provider) never opens a session.
+      if (!provider) throw new Error("no LLM provider configured");
+      return createTutorSession({
         courseRoot,
         modules,
         module,
@@ -43,7 +46,8 @@ export async function runTui(
         userPrompt: userConfig.systemPrompt,
         skillsDir: userConfig.skillsDir,
         historyFile: join(courseRoot, "session", `${module.id}.json`),
-      }),
+      });
+    },
     onQuit: quit,
   });
   tui.addChild(app);

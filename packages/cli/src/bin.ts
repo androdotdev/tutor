@@ -54,8 +54,16 @@ async function loadCourse(): Promise<{ courseRoot: string; modules: ModuleDesc[]
 }
 
 async function launchTui(moduleArg?: string, opts?: { home?: boolean }): Promise<void> {
-  const { courseRoot, modules } = await loadCourse();
-  if (!modules.length) throw new CliError(`no modules found in ${courseRoot}/modules`);
+  // Home works in ANY folder — including a fresh course-building folder with
+  // no modules/ yet (the /new pipeline creates it). Only `run` (picker/chat)
+  // and direct module sessions require a resolved course root.
+  const courseRoot =
+    findCourseRoot(process.cwd()) ?? userConfig.defaultCourse ?? (opts?.home ? process.cwd() : null);
+  if (!courseRoot) {
+    throw new CliError("no course root found (no ./modules directory). cd into the course or set defaultCourse in config.");
+  }
+  const modules = await resolveCourse(courseRoot);
+  if (!modules.length && !opts?.home) throw new CliError(`no modules found in ${courseRoot}/modules`);
   let initial: ModuleDesc | undefined;
   const target = moduleArg?.trim();
   if (target) {

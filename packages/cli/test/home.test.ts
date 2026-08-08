@@ -43,6 +43,12 @@ describe("runHomeCommand", () => {
     expect(notes).not.toContain("sk-secret");
   });
 
+  test("/provider without a configured LLM says none configured", () => {
+    const notes = runHomeCommand("/provider", { modules, provider: null }).join("\n");
+    expect(notes).toContain("none configured");
+    expect(notes).toContain("OPENAI_API_KEY");
+  });
+
   test("/help lists the commands", () => {
     const notes = runHomeCommand("/help", { modules, provider }).join("\n");
     expect(notes).toContain("/list");

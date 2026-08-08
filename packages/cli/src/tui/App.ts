@@ -20,7 +20,8 @@ import { openTreeOverlay, rewindHistoryFile } from "./tree";
 export interface LyceumAppOptions {
   courseRoot: string;
   modules: ModuleDesc[];
-  provider: ProviderSelection;
+  /** Null when home opens without a configured LLM (fresh folder, no key). */
+  provider: ProviderSelection | null;
   makeSession: (module: ModuleDesc) => TutorSession;
   /** Open a session immediately instead of the module picker. */
   initialModule?: ModuleDesc;
@@ -312,7 +313,7 @@ export class SessionView extends Container {
  */
 export function runHomeCommand(
   value: string,
-  ctx: { modules: ModuleDesc[]; provider: ProviderSelection },
+  ctx: { modules: ModuleDesc[]; provider: ProviderSelection | null },
 ): string[] {
   const name = value.trim().split(/\s+/)[0];
   switch (name) {
@@ -323,7 +324,7 @@ export function runHomeCommand(
       return ["modules:", ...ctx.modules.map((m) => `  ${m.id} — ${m.title} (${m.layout} · ${m.moduleDir})`)];
     case "/provider": {
       const p = ctx.provider;
-      return [`provider: ${p.label} · ${p.modelId} · ${p.baseUrl}`];
+      return p ? [`provider: ${p.label} · ${p.modelId} · ${p.baseUrl}`] : ["provider: none configured — set OPENAI_API_KEY or OLLAMA_HOST"];
     }
     case "/help":
       return ["commands: /list — course modules · /provider — resolved LLM · /new — build a course · /help — this list"];
@@ -339,13 +340,13 @@ export class HomeView extends Container {
   private readonly status = new Text("", 0, 0);
   private readonly input = new Input();
   private readonly modules: ModuleDesc[];
-  private readonly provider: ProviderSelection;
+  private readonly provider: ProviderSelection | null;
   private readonly onQuit: () => void;
   private readonly runner: BuildRunner;
 
   constructor(
     tui: TUI,
-    opts: { modules: ModuleDesc[]; provider: ProviderSelection; courseRoot: string; onQuit: () => void },
+    opts: { modules: ModuleDesc[]; provider: ProviderSelection | null; courseRoot: string; onQuit: () => void },
   ) {
     super();
     this.tui = tui;

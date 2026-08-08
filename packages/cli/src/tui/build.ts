@@ -35,7 +35,8 @@ import { style } from "./theme";
 
 export interface BuildRunnerOptions {
   courseRoot: string;
-  provider: ProviderSelection;
+  /** Null when home opened without a configured LLM — /new explains instead of running. */
+  provider: ProviderSelection | null;
   transcript: Transcript;
   /** Status-line updates while the build runs (busy text, interrupt, idle). */
   onStatus: (text: string) => void;
@@ -58,6 +59,13 @@ export class BuildRunner {
   private written: string[] = [];
 
   constructor(private readonly ctx: BuildRunnerOptions) {}
+
+  /** Non-null provider: start() refuses to run a build without one. */
+  private get provider(): ProviderSelection {
+    const p = this.ctx.provider;
+    if (!p) throw new Error("no LLM provider configured");
+    return p;
+  }
 
   /** The clarify stage's ask_user channel: question → home transcript → next input line. */
   readonly askUser = (question: string): Promise<string> => {
@@ -95,6 +103,10 @@ export class BuildRunner {
 
   async start(prompt: string): Promise<void> {
     if (this.running) return;
+    if (!this.ctx.provider) {
+      this.note("cannot build — no LLM provider configured (set OPENAI_API_KEY or OLLAMA_HOST)");
+      return;
+    }
     this.running = true;
     this.onStatus(this.busyStatus());
     const target = this.ctx.courseRoot;
@@ -124,7 +136,7 @@ export class BuildRunner {
 
   /** Fresh dir: clarify → research → plan → author every module. */
   private async full(target: string, prompt: string): Promise<void> {
-    const { provider } = this.ctx;
+    const provider = this.provider;
     this.note(`building course: "${prompt}" — ${provider.label} (${provider.modelId})`);
     this.beginStage("clarifying", "course requirements");
     const { recap } = await runClarify({
@@ -194,7 +206,7 @@ export class BuildRunner {
       courseRoot: target,
       modules,
       module,
-      provider: this.ctx.provider,
+      provider: this.provider,
     });
     session.subscribe((e) => this.onEvent("build", e));
     const task =
@@ -216,7 +228,7 @@ export class BuildRunner {
   private async build(target: string, prompt: string, outline: CourseOutline): Promise<void> {
     this.beginStage("authoring", `${outline.modules.length} modules`);
     const result = await buildCourse({
-      provider: this.ctx.provider,
+      provider: this.provider,
       courseRoot: target,
       outline,
       prompt,
