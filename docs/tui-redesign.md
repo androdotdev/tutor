@@ -1,6 +1,6 @@
 # Lyceum TUI redesign — plan
 
-Status: Phase 0 **done** (verified); Phases 1–4 proposed.
+Status: Phases 0–1 **done** (verified); Phases 2–4 proposed.
 
 Release process: feature commits land per phase, **no version bump or tag until
 the final push** — one `release(cli): bump to <version>` commit + tag at the end
@@ -128,30 +128,34 @@ clean. Also fixed a pre-existing typecheck error in
 Acceptance met: with a long session, tmux scrollback contains the transcript;
 terminal scroll is the only scroll; no in-app scroll keys.
 
-### Phase 1 — Slash commands + home view
+### Phase 1 — Slash commands + home view ✅ done
 
 Files: `packages/cli/src/tui/App.ts` (new `HomeView`), `main.ts` (dispatch),
-`packages/cli/README.md`.
+`bin.ts` (bare default), `test/home.test.ts`.
 
-1. `LyceumApp` gains a **home view**: transcript area + the single shared input
-   line. Home transcript holds app notes (module list, provider, build logs).
-   Bare `lyceum` opens home; `lyceum run` is unchanged (module picker + chat).
-2. Slash parser in the input handler, before chat routing (omp ordering:
-   built-ins first, then session/chat). Commands in scope:
-   - `/list` — print the course modules to the home transcript.
-   - `/provider` — print resolved provider to the transcript.
-   - `/help` — command list.
-   - `/tree`, `/new` — Phases 2 and 3 (registered in Phase 1 as stubs that
-     print "coming" is NOT allowed — see Non-goals; they land with their
-     phases).
-   - No `/tute`: `lyceum run` remains the chat entry (module picker + session
-     views as they are today). A `/tute` command can be added later if the
-     all-in-one surface ever replaces `lyceum run`.
-3. In a session view (`lyceum run`), non-`/` text goes to the coach; no global
-   `/`-dispatch inside the chat for now (that keeps `lyceum run` untouched).
-4. CLI subcommands in `bin.ts` stay untouched (scripting/CI path).
+Built:
 
-Acceptance: bare `lyceum` opens home; `/list`, `/provider`, `/help` work;
+1. `HomeView`: Container with an unbounded transcript (app notes) + status +
+   input — same scrollback seams as the chat view (transcript is the first
+   child). Welcome note, "home — /list · /provider · /help · Esc quits" status,
+   Esc quits the app.
+2. Slash dispatch as a pure `runHomeCommand(value, ctx)` → note lines
+   (testable without a TUI): `/list` (module rows), `/provider`
+   (label · model · baseUrl — never the key), `/help`, unknown → hint. Plain
+   text gets a "home has no chat — `lyceum run` opens a module session" hint.
+3. Bare `lyceum` → home (`launchTui(undefined, { home: true })` →
+   `initialView: "home"`); `lyceum run [module]` unchanged (picker/chat).
+   Subcommands (`new`/`list`/`provider`/`setup`) untouched.
+4. Tests (`test/home.test.ts`, 10 cases): command outputs, key redaction,
+   unknown-command hint, submit → transcript rows, plain-text hint, Esc quit,
+   empty submit, byte-stability.
+
+Verified: 105 tests pass, typecheck + lint clean, pty smoke (tmux): home boots
+with welcome + status; `/list`, `/provider`, `/help`, `/bogus` all render to
+the transcript; plain text gets the no-chat hint only; Esc quits; picker path
+(`lyceum run`) boots and quits unchanged.
+
+Acceptance met: bare `lyceum` opens home; `/list`, `/provider`, `/help` work;
 `lyceum run` behaves exactly as today from a shell.
 
 ### Phase 2 — `/tree`: session-tree navigator (v1: jump/rewind)

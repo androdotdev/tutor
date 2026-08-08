@@ -11,6 +11,7 @@ export async function runTui(
   courseRoot: string,
   initialModule: ModuleDesc | undefined,
   userConfig: UserConfig,
+  opts?: { home?: boolean },
 ): Promise<void> {
   const modules = await resolveCourse(courseRoot);
   if (!modules.length) throw new Error(`no modules found under ${courseRoot}/modules`);
@@ -30,6 +31,7 @@ export async function runTui(
     modules,
     provider,
     initialModule,
+    initialView: opts?.home ? "home" : "picker",
     makeSession: (module) =>
       createTutorSession({
         courseRoot,

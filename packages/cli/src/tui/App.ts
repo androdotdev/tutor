@@ -1,4 +1,4 @@
-// Lyceum TUI on @oh-my-pi/pi-tui: module picker -> Socratic chat session.
+// Lyceum TUI on @oh-my-pi/pi-tui: home command surface -> module picker -> Socratic chat session.
 import {
   Container,
   Input,
@@ -21,6 +21,8 @@ export interface LyceumAppOptions {
   makeSession: (module: ModuleDesc) => TutorSession;
   /** Open a session immediately instead of the module picker. */
   initialModule?: ModuleDesc;
+  /** Bare `lyceum` opens the home command surface; `lyceum run` keeps the picker. */
+  initialView?: "home" | "picker";
   onQuit: () => void;
 }
 
@@ -263,6 +265,101 @@ export class SessionView extends Container {
   }
 }
 
+/**
+ * Slash-command dispatch for the home surface. Pure: returns the note lines to
+ * append to the transcript, so the commands are testable without a TUI.
+ */
+export function runHomeCommand(
+  value: string,
+  ctx: { modules: ModuleDesc[]; provider: ProviderSelection },
+): string[] {
+  const name = value.trim().split(/\s+/)[0];
+  switch (name) {
+    case "/list":
+      if (!ctx.modules.length) {
+        return ["no modules found — cd into a course or set defaultCourse in config"];
+      }
+      return ["modules:", ...ctx.modules.map((m) => `  ${m.id} — ${m.title} (${m.layout} · ${m.moduleDir})`)];
+    case "/provider": {
+      const p = ctx.provider;
+      return [`provider: ${p.label} · ${p.modelId} · ${p.baseUrl}`];
+    }
+    case "/help":
+      return ["commands: /list — course modules · /provider — resolved LLM · /help — this list"];
+    default:
+      return [`unknown command: ${name} — try /help`];
+  }
+}
+
+/** Home command surface: app notes transcript + the shared input line. */
+export class HomeView extends Container {
+  readonly transcript = new Transcript();
+  private readonly tui: TUI;
+  private readonly status = new Text("", 0, 0);
+  private readonly input = new Input();
+  private readonly modules: ModuleDesc[];
+  private readonly provider: ProviderSelection;
+  private readonly onQuit: () => void;
+
+  constructor(
+    tui: TUI,
+    opts: { modules: ModuleDesc[]; provider: ProviderSelection; onQuit: () => void },
+  ) {
+    super();
+    this.tui = tui;
+    this.modules = opts.modules;
+    this.provider = opts.provider;
+    this.onQuit = opts.onQuit;
+
+    this.input.prompt = "» ";
+    this.input.onSubmit = (value) => this.submit(value);
+    this.input.onEscape = () => this.onQuit();
+
+    this.addChild(this.transcript);
+    this.addChild(this.status);
+    this.addChild(this.input);
+
+    this.transcript.add({
+      who: "note",
+      text: "lyceum — Socratic self-learning coach. Type /help for commands, /list to browse modules, or `lyceum run` for a module session.",
+    });
+    this.status.setText(style.dim("home — /list · /provider · /help · Esc quits"));
+  }
+
+  /** The component that owns keyboard input while this view is active. */
+  get focusable(): Input {
+    return this.input;
+  }
+
+  /** Native-scrollback seam: the transcript is the first child (offset 0). */
+  getNativeScrollbackLiveRegionStart(): number {
+    return this.transcript.getNativeScrollbackLiveRegionStart();
+  }
+
+  /** Stability report: settled rows are byte-stable; forwarded from the transcript. */
+  getRenderStablePrefixRows(): number {
+    return this.transcript.getRenderStablePrefixRows();
+  }
+
+  private submit(value: string): void {
+    const text = value.trim();
+    if (!text) return;
+    this.input.setValue("");
+    this.transcript.add({ who: "user", text });
+    if (text.startsWith("/")) {
+      for (const note of runHomeCommand(text, { modules: this.modules, provider: this.provider })) {
+        this.transcript.add({ who: "note", text: note });
+      }
+    } else {
+      this.transcript.add({
+        who: "note",
+        text: "home has no chat — `lyceum run` opens a module session (type /help)",
+      });
+    }
+    this.tui.requestRender();
+  }
+}
+
 /** Module picker: SelectList with type-to-filter. */
 export class ModuleListView extends Container {
   private readonly tui: TUI;
@@ -297,7 +394,7 @@ export class ModuleListView extends Container {
 
 /** Root view switcher: module list <-> session. */
 export class LyceumApp extends Container {
-  private view: ModuleListView | SessionView | null = null;
+  private view: HomeView | ModuleListView | SessionView | null = null;
   private readonly tui: TUI;
   private readonly opts: LyceumAppOptions;
 
@@ -307,6 +404,8 @@ export class LyceumApp extends Container {
     this.opts = opts;
     if (opts.initialModule) {
       this.openSession(opts.initialModule);
+    } else if (opts.initialView === "home") {
+      this.showHome();
     } else {
       this.showList();
     }
@@ -335,6 +434,16 @@ export class LyceumApp extends Container {
     return undefined;
   }
 
+  showHome(): void {
+    this.swap(
+      new HomeView(this.tui, {
+        modules: this.opts.modules,
+        provider: this.opts.provider,
+        onQuit: this.opts.onQuit,
+      }),
+    );
+  }
+
   showList(): void {
     this.swap(
       new ModuleListView(this.tui, this.opts.modules, (m) => this.openSession(m), this.opts.onQuit),
@@ -351,7 +460,7 @@ export class LyceumApp extends Container {
     );
   }
 
-  private swap(view: ModuleListView | SessionView): void {
+  private swap(view: HomeView | ModuleListView | SessionView): void {
     this.disposeChildren();
     this.view = view;
     this.addChild(view);

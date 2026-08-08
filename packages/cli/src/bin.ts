@@ -53,7 +53,7 @@ async function loadCourse(): Promise<{ courseRoot: string; modules: ModuleDesc[]
   return { courseRoot, modules };
 }
 
-async function launchTui(moduleArg?: string): Promise<void> {
+async function launchTui(moduleArg?: string, opts?: { home?: boolean }): Promise<void> {
   const { courseRoot, modules } = await loadCourse();
   if (!modules.length) throw new CliError(`no modules found in ${courseRoot}/modules`);
   let initial: ModuleDesc | undefined;
@@ -67,7 +67,7 @@ async function launchTui(moduleArg?: string): Promise<void> {
   // headless commands (list/test/new/provider) and out of the tsup entry
   // graph; static import would pull the terminal stack into every invocation.
   const { runTui } = await import("./tui/main");
-  await runTui(courseRoot, initial, userConfig);
+  await runTui(courseRoot, initial, userConfig, { home: opts?.home });
 }
 
 const program = new Command("lyceum")
@@ -77,14 +77,15 @@ const program = new Command("lyceum")
   .allowExcessArguments(true)
   .exitOverride();
 
-// Bare `lyceum` opens the TUI, same as `lyceum run`. Tokens that match no
-// subcommand land in program.args, so reject them as unknown commands
-// (commander's default would say "too many arguments").
+// Bare `lyceum` opens the home command surface; `lyceum run` keeps the module
+// picker + chat. Tokens that match no subcommand land in program.args, so
+// reject them as unknown commands (commander's default would say "too many
+// arguments").
 program.action(() => {
   if (program.args.length > 0) {
     throw new CliError(`unknown command "${String(program.args[0])}"`);
   }
-  return launchTui();
+  return launchTui(undefined, { home: true });
 });
 
 /** Append mode: author ONE module by title (find-or-create). Old add/draft logic. */
