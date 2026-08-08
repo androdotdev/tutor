@@ -1,6 +1,7 @@
 # Lyceum TUI redesign — plan
 
-Status: Phases 0–3 **done** (verified); Phase 4 proposed.
+Status: Phases 0–3 **done** (verified, released in 0.3.6); Phase 4 **deferred** —
+the web landing page remains a plan, not part of this release cycle.
 
 Release process: feature commits land per phase, **no version bump or tag until
 the final push** — one `release(cli): bump to <version>` commit + tag at the end
@@ -249,7 +250,15 @@ Acceptance met: `/new make a docker course` runs the full pipeline with live
 logs; clarifying questions answered in the input line; Esc interrupts a stage;
 failures resume on re-run; the terminal stays interactive the whole time.
 
-### Phase 4 — Web landing page (`packages/web`)
+### Phase 4 — Web landing page (`packages/web`) ⏸ deferred
+
+Not in this release cycle. The web landing page stays a plan; the release
+through Phase 3 ships first.
+
+A local draft of the page (plain `index.html` + `style.css` + `app.js`, no
+build step) already exists at `.draft/web/` (gitignored, not committed). When
+Phase 4 resumes: finish the draft, then publish it with the `relay` CLI
+(`relay publish` — needs `POST_API_KEY` configured first).
 
 Files: new `packages/web/` (index.html + server), root `package.json` (workspace
 entry), `docs/tui-redesign.md` pointer.
